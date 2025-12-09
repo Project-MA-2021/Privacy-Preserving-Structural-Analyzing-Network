@@ -35,6 +35,7 @@
         <label class="section-label">示例网络：</label>
         <select v-model="selectedDemoKey">
           <option value="GGS">GGS 示例网络</option>
+          <option value="ISN">ISN 示例网络</option>
           <!-- 以后可以再加 ISN 等 -->
         </select>
 
@@ -156,223 +157,352 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import type { GraphData } from '../types/symbolNetwork';
-import { demoGraphs } from '../data/demoGraphs';
+  import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+  import type { GraphData } from '../types/symbolNetwork';
+  import { demoGraphs,type DemoGraphKey } from '../data/demoGraphs';
+  
+  // ECharts 相关
+  import * as echarts from 'echarts';
+  import 'echarts-gl';
+  
+  import { computeSphereLayout, type Coord3D } from '../utils/sphereLayout';
 
-// ECharts 相关
-import * as echarts from 'echarts';
-import 'echarts-gl';
+  const clusterColors = ['#66ccff', '#ffcc66']; // 簇 0、簇 1 的颜色
+  const defaultNodeColor = '#ffffff';
 
-import { computeSphereLayout, type Coord3D } from '../utils/sphereLayout';
-
-type DataSourceType = 'demo' | 'custom';
-type EChartsGLOption = echarts.EChartsOption & {
-  xAxis3D?: any;
-  yAxis3D?: any;
-  zAxis3D?: any;
-  grid3D?: any;
-  globe?: any;
-  series?: any;
-};
-
-
-const dataSource = ref<DataSourceType>('demo');
-const selectedDemoKey = ref<'GGS'>('GGS');
-
-// 自定义网络数据（先留空，下一步我们会真正操作它）
-const customGraph = ref<GraphData>({
-  nodes: [],
-  edges: [],
-});
-
-// 自建网表单状态
-const newNodeLabel = ref('');
-const newEdgeSource = ref<string>('');
-const newEdgeTarget = ref<string>('');
-const newEdgeSign = ref<1 | -1>(1);
-
-let edgeIdCounter = 1;
-
-
-// 当前用于展示的图
-const currentGraph = computed<GraphData>(() => {
-  if (dataSource.value === 'demo') {
-    return demoGraphs[selectedDemoKey.value];
-  }
-  return customGraph.value;
-});
-
-// --- ECharts 初始化与更新 ---
-
-const chartDom = ref<HTMLDivElement | null>(null);
-let chart: echarts.ECharts | null = null;
-
-// 添加节点
-function addNode() {
-  const label = newNodeLabel.value.trim();
-  if (!label) return;
-
-  const id = label; // 简单起见：id 就用 label
-  // 防止重名
-  if (customGraph.value.nodes.some((n) => n.id === id)) {
-    // 这里可以加个提示，先简单 return
-    return;
-  }
-
-  customGraph.value.nodes.push({ id, label });
-  newNodeLabel.value = '';
-}
-
-// 添加边
-function addEdge() {
-  if (!newEdgeSource.value || !newEdgeTarget.value) return;
-  if (newEdgeSource.value === newEdgeTarget.value) return;
-
-  const id = `e${edgeIdCounter++}`;
-
-  customGraph.value.edges.push({
-    id,
-    source: newEdgeSource.value,
-    target: newEdgeTarget.value,
-    sign: newEdgeSign.value,
+  
+  type DataSourceType = 'demo' | 'custom';
+  
+  // 给 echarts-gl 用的宽松 Option 类型
+  type EChartsGLOption = echarts.EChartsOption & {
+    xAxis3D?: any;
+    yAxis3D?: any;
+    zAxis3D?: any;
+    grid3D?: any;
+    globe?: any;
+    series?: any;
+  };
+  
+  const dataSource = ref<DataSourceType>('demo');
+  const selectedDemoKey = ref<DemoGraphKey>('GGS');
+  
+  // 自定义网络数据
+  const customGraph = ref<GraphData>({
+    nodes: [],
+    edges: [],
   });
-
-  // 可以选择是否清空起止点，这里先保留，方便连着加
-}
-
-
-function buildSphereGraphOption(graph: GraphData): EChartsGLOption {
-  // 没节点就返回一个空配置，避免多余 setOption
-  if (!graph.nodes.length) {
-    return { series: [] };
+  
+  // ---------- 自建网表单状态 & 方法 ----------
+  
+  // 添加节点的输入
+  const newNodeLabel = ref('');
+  
+  // 添加边的输入：起点、终点、正/负
+  const newEdgeSource = ref<string>('');
+  const newEdgeTarget = ref<string>('');
+  const newEdgeSign = ref<1 | -1>(1);
+  
+  let edgeIdCounter = 1;
+  
+  // 添加节点
+  function addNode() {
+    const label = newNodeLabel.value.trim();
+    if (!label) return;
+  
+    const id = label; // 简单起见：id 直接用名称
+    if (customGraph.value.nodes.some((n) => n.id === id)) {
+      // 已存在同名节点，就不再添加
+      return;
+    }
+  
+    customGraph.value.nodes.push({ id, label });
+    newNodeLabel.value = '';
   }
+  
+  // 添加边
+  function addEdge() {
+    if (!newEdgeSource.value || !newEdgeTarget.value) return;
+    if (newEdgeSource.value === newEdgeTarget.value) return;
+  
+    const id = `e${edgeIdCounter++}`;
+  
+    customGraph.value.edges.push({
+      id,
+      source: newEdgeSource.value,
+      target: newEdgeTarget.value,
+      sign: newEdgeSign.value,
+    });
+  }
+  
+  // ---------- 当前用于展示的图 ----------
+  
+  const currentGraph = computed<GraphData>(() => {
+    if (dataSource.value === 'demo') {
+      return demoGraphs[selectedDemoKey.value];
+    }
+    return customGraph.value;
+  });
+  
+  // ---------- ECharts 初始化与更新 ----------
+  
+  const chartDom = ref<HTMLDivElement | null>(null);
+  let chart: echarts.ECharts | null = null;
+  
+  // 构建“球面符号网络”的 3D 配置（点 + 线）
+  function buildSphereGraphOption(graph: GraphData): EChartsGLOption {
+    if (!graph.nodes.length) {
+      return { series: [] };
+    }
+  
+    const radius = 10;
+    const coords = computeSphereLayout(graph.nodes, radius);
 
-  const radius = 10;
-  const coords = computeSphereLayout(graph.nodes, radius);
-
+    // 取出示例网络可能带的 clusters
+    const clusters = graph.clusters || {};
+    
+    // 节点数据：按簇选颜色，写在每个点的 itemStyle 里
   const nodeData = graph.nodes.map((node) => {
     const [x, y, z] = coords[node.id] as Coord3D;
-    return {
-      name: node.label,
-      value: [x, y, z],
-      nodeId: node.id,
-    };
-  });
-
-  const option: EChartsGLOption = {
-    tooltip: {
-      formatter: (params: any) => {
-        if (params.seriesType === 'scatter3D') {
-          return `节点：${params.data.nodeId}`;
-        }
-        return '';
-      },
-    },
-
-    // 三维直角坐标系
-    xAxis3D: {
-      type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
-    },
-    yAxis3D: {
-      type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
-    },
-    zAxis3D: {
-      type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
-    },
-
-    grid3D: {
-      viewControl: {
-        autoRotate: true,
-        autoRotateSpeed: 5,
-        projection: 'perspective',
-      },
-    },
-
-    // ⚠️ 先不加 globe，不加 lines3D，只画点
-    series: [
-      {
-        type: 'scatter3D',
-        coordinateSystem: 'cartesian3D',
-        symbolSize: 12,
-        data: nodeData,
+    const cIndex = (clusters as any)[node.id] as number | undefined;
+    const color =
+      typeof cIndex === 'number'
+        ? clusterColors[cIndex % clusterColors.length]
+        : defaultNodeColor;
+      return {
+        name: node.label,
+        value: [x, y, z],
+        nodeId: node.id,
+        clusterIndex: cIndex,
         itemStyle: {
+          color,
+        },
+      };
+    });
+  
+    // 每条边一条 3D 线段（line3D）
+    const edgeSeries = graph.edges.map((e) => {
+      const c1 = coords[e.source] as Coord3D;
+      const c2 = coords[e.target] as Coord3D;
+      const isPositive = e.sign === 1;
+  
+      return {
+        type: 'line3D',
+        coordinateSystem: 'cartesian3D',
+        data: [
+          [c1[0], c1[1], c1[2]],
+          [c2[0], c2[1], c2[2]],
+        ],
+        lineStyle: {
+          width: 2,
+          color: isPositive ? '#00aa00' : '#dd0000', // 正边绿，负边红
           opacity: 0.9,
         },
-        label: {
-          show: true,
-          formatter: '{b}',
-          distance: 2,
+      };
+    });
+  
+    const option: EChartsGLOption = {
+      tooltip: {
+        axisPointer:{
+          show: false,
+        },
+        formatter: (params: any) => {
+          if (params.seriesType === 'scatter3D') {
+            return `节点：${params.data.nodeId}`;
+          }
+          return '';
         },
       },
-    ],
-  };
-
-  return option;
-}
-
-
-function initChart() {
-  if (!chartDom.value) return;
-
-  // 防止重复 init
-  if (chart) {
-    chart.dispose();
-    chart = null;
+  
+      // 三维直角坐标系
+      xAxis3D: {
+        type: 'value',
+        min: -radius * 1.2,
+        max: radius * 1.2,
+        axisLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 轴线透明
+            opacity: 0,
+          },
+        },
+        axisTick: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 刻度透明
+            opacity: 0,
+          },
+        },
+        axisLabel: {
+          show: true,                // 不关掉，防止 echarts-gl 报错
+          textStyle: {
+            color: 'rgba(0,0,0,0)',  // 文本透明
+            opacity: 0,
+          },
+        },
+        splitLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)',  // 网格线透明
+            opacity: 0,
+          },
+        },
+        axisPointer: {
+          show: false,               // 再保险，单轴也关掉 pointer
+        },
+      },
+      yAxis3D: {
+        type: 'value',
+        min: -radius * 1.2,
+        max: radius * 1.2,
+        axisLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 轴线透明
+            opacity: 0,
+          },
+        },
+        axisTick: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 刻度透明
+            opacity: 0,
+          },
+        },
+        axisLabel: {
+          show: true,                // 不关掉，防止 echarts-gl 报错
+          textStyle: {
+            color: 'rgba(0,0,0,0)',  // 文本透明
+            opacity: 0,
+          },
+        },
+        splitLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)',  // 网格线透明
+            opacity: 0,
+          },
+        },
+        axisPointer: {
+          show: false,               // 再保险，单轴也关掉 pointer
+        },
+      },
+      zAxis3D: {
+        type: 'value',
+        min: -radius * 1.2,
+        max: radius * 1.2,
+        axisLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 轴线透明
+            opacity: 0,
+          },
+        },
+        axisTick: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)', // 刻度透明
+            opacity: 0,
+          },
+        },
+        axisLabel: {
+          show: true,                // 不关掉，防止 echarts-gl 报错
+          textStyle: {
+            color: 'rgba(0,0,0,0)',  // 文本透明
+            opacity: 0,
+          },
+        },
+        splitLine: {
+          lineStyle: {
+            color: 'rgba(0,0,0,0)',  // 网格线透明
+            opacity: 0,
+          },
+        },
+        axisPointer: {
+          show: false,               // 再保险，单轴也关掉 pointer
+        },
+      },
+      /*
+      xAxis3D: { type: 'value', min: -radius * 1.2, max: radius * 1.2 },
+      yAxis3D: { type: 'value', min: -radius * 1.2, max: radius * 1.2 },
+      zAxis3D: { type: 'value', min: -radius * 1.2, max: radius * 1.2 },
+      */
+      grid3D: {
+        boxWidth: 200,
+        boxHeight: 200,
+        boxDepth: 200,
+        viewControl: {
+          autoRotate: true,
+          autoRotateSpeed: 5,
+          projection: 'perspective',
+        },
+      },
+  
+      globe: {
+        show: false,
+      },
+  
+      series: [
+        // 节点
+        {
+          type: 'scatter3D',
+          coordinateSystem: 'cartesian3D',
+          symbolSize: 10,
+          data: nodeData,
+          itemStyle: {
+            //color: '#ffffff',//节点颜色
+            opacity: 1,
+          },
+          label: {
+            show: true,
+            formatter: '{b}',
+            distance: 2,
+          },
+        },
+        // 边：每条边一条 line3D
+        ...edgeSeries,
+      ],
+    };
+  
+    return option;
   }
-
-  chart = echarts.init(chartDom.value);
-
-  const graph = currentGraph.value;
-  console.log('init graph:', graph);  // 调试看有没有节点/边
-
-  const option = buildSphereGraphOption(graph);
-  console.log('init option:', option); // 调试看 option 结构
-
-  chart.setOption(option as echarts.EChartsOption);
-  chart.resize(); // 初始化后强制做一次尺寸计算
-}
-
-
-function resizeChart() {
-  if (chart) {
-    chart.resize();
+  
+  function initChart() {
+    if (!chartDom.value) return;
+  
+    chart = echarts.init(chartDom.value);
+    const option = buildSphereGraphOption(currentGraph.value);
+    chart.setOption(option as any);
   }
-}
-
-onMounted(() => {
-  initChart();
-  window.addEventListener('resize', resizeChart);
-});
-
-// 当数据变化时更新图
-watch(
-  () => currentGraph.value,
-  (newVal) => {
-    if (!chart && chartDom.value) {
-      initChart();
-    }
+  
+  function resizeChart() {
     if (chart) {
-      chart.setOption(buildSphereGraphOption(newVal) as echarts.EChartsOption, true);
+      chart.resize();
     }
-  },
-  { deep: true }
-);
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeChart);
-  if (chart) {
-    chart.dispose();
-    chart = null;
   }
-});
-</script>
+  
+  onMounted(() => {
+    initChart();
+    window.addEventListener('resize', resizeChart);
+  });
+  
+  // 当数据变化时更新图
+  watch(
+    () => currentGraph.value,
+    (newVal) => {
+      if (!chart && chartDom.value) {
+        initChart();
+        return;
+      }
+      if (chart) {
+        const option = buildSphereGraphOption(newVal);
+        chart.setOption(option as any, true);
+      }
+    },
+    { deep: true }
+  );
+  
+  onBeforeUnmount(() => {
+    window.removeEventListener('resize', resizeChart);
+    if (chart) {
+      chart.dispose();
+      chart = null;
+    }
+  });
+  </script>
+  
+
 
 <style scoped>.symbol-page {
   display: flex;
