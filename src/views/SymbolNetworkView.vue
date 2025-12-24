@@ -45,7 +45,7 @@
         </div>
 
         <div class="sub-toolbar">
-          <!-- ✅ compare 与 aggregate 互斥：UI 层互相禁用 -->
+          <!-- compare 与 aggregate 互斥：UI 层互相禁用 -->
           <div class="seg">
             <button
               class="seg-btn"
@@ -95,11 +95,11 @@
         </p>
 
         <p v-if="privacyOn && aggregateOn" class="hint">
-          聚合展示：隐藏所有边，只显示全局统计（“只给结果，不给细节”）。
+          聚合展示：隐藏所有边，只显示全局统计。
         </p>
 
         <p v-if="privacyOn && (compareOn || aggregateOn)" class="hint">
-          Triad 浏览与“结构对比/聚合展示”互斥：关闭它们即可进入 Triad 浏览（避免语义叠加）。
+          Triad 浏览与“结构对比/聚合展示”互斥：关闭它们即可进入 Triad 浏览。
         </p>
 
         <p v-if="showTriadPanel" class="hint">
@@ -202,8 +202,9 @@
               <div class="v">{{ (stats.balancedRatio * 100).toFixed(1) }}%</div>
             </div>
           </div>
-
+          <!--
           <div class="agg-foot">聚合展示用于模拟“只给全局结果，不给边级细节”。</div>
+          -->
         </div>
 
         <!-- triad 卡片 -->
@@ -335,7 +336,7 @@ const drawEdges = computed(() => {
 const stats = computed(() => computeBalanceStats(baseGraph.value));
 const showAggregateCard = computed(() => dataSource.value === 'demo' && privacyOn.value && aggregateOn.value);
 
-// ✅ triad 与 compare/aggregate 互斥（避免语义叠加）
+// triad 与 compare/aggregate 互斥
 const showTriadPanel = computed(() => {
   return dataSource.value === 'demo' && privacyOn.value && !aggregateOn.value && !compareOn.value;
 });
