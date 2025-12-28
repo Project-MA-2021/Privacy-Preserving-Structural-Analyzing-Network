@@ -24,6 +24,11 @@
           <label class="section-label">网络选择：</label>
 
           <div class="title-actions">
+            <!-- 新增：总图聚合按钮（与“聚合展示”不是一个概念） -->
+            <button class="btn btn-small" type="button" @click="toggleAggregateGraph">
+              {{ aggregateGraphOn ? '退出总图' : '聚合为总图' }}
+            </button>
+
             <label class="toggle">
               <input type="checkbox" v-model="privacyOn" />
               隐私模式
@@ -45,7 +50,7 @@
         </div>
 
         <div class="sub-toolbar">
-          <!-- compare 与 aggregate 互斥：UI 层互相禁用 -->
+          <!-- compare 与（隐私子模式）aggregate 互斥：UI 层互相禁用 -->
           <div class="seg">
             <button
               class="seg-btn"
@@ -67,7 +72,6 @@
               聚合展示
             </button>
           </div>
-
         </div>
 
         <div class="net-list">
@@ -76,8 +80,10 @@
             :key="k"
             type="button"
             class="net-item"
-            :class="{ active: k === selectedDemoKey }"
+            :class="{ active: !aggregateGraphOn && k === selectedDemoKey }"
             @click="selectDemo(k)"
+            :disabled="aggregateGraphOn"
+            :title="aggregateGraphOn ? '当前为总图模式，单图选择已禁用' : ''"
           >
             <div class="net-title">{{ demoGraphMeta[k]?.title ?? k }}</div>
             <div class="net-meta">
@@ -87,7 +93,18 @@
         </div>
 
         <p class="hint">
-          当前选中：{{ selectedDemoKey }}（节点 {{ baseGraph.nodes.length }} 个，边 {{ baseGraph.edges.length }} 条）
+          当前选中：
+          <span v-if="!aggregateGraphOn">
+            {{ selectedDemoKey }}
+          </span>
+          <span v-else>
+            总图（聚合全部示例网络）
+          </span>
+          （节点 {{ baseGraph.nodes.length }} 个，边 {{ baseGraph.edges.length }} 条）
+        </p>
+
+        <p v-if="aggregateGraphOn" class="hint">
+          总图模式：先将所有示例网络聚合为一张网络，再进行 K-means 聚簇、随机扰动、再聚簇。
         </p>
 
         <p v-if="privacyOn && compareOn" class="hint">
@@ -95,7 +112,7 @@
         </p>
 
         <p v-if="privacyOn && aggregateOn" class="hint">
-          聚合展示：隐藏所有边，只显示全局统计。
+          聚合展示：隐藏所有边，只显示全局统计（不等同于“总图模式”，仅是隐私展示方式）。
         </p>
 
         <p v-if="privacyOn && (compareOn || aggregateOn)" class="hint">
@@ -163,7 +180,7 @@
       <div class="chart-container">
         <div ref="chartDom" class="chart-root"></div>
 
-        <!-- 聚合卡片 -->
+        <!-- 聚合卡片（隐私子模式：聚合展示） -->
         <div v-if="showAggregateCard" class="aggregate-card">
           <div class="agg-title">全局结构平衡（聚合）</div>
 
@@ -202,9 +219,6 @@
               <div class="v">{{ (stats.balancedRatio * 100).toFixed(1) }}%</div>
             </div>
           </div>
-          <!--
-          <div class="agg-foot">聚合展示用于模拟“只给全局结果，不给边级细节”。</div>
-          -->
         </div>
 
         <!-- triad 卡片 -->
@@ -268,9 +282,10 @@ const dataSource = ref<DataSourceType>('demo');
 // demo pipeline
 const {
   selectedDemoKey,
+  aggregateGraphOn, // 新增：总图模式开关
   privacyOn,
   compareOn,
-  aggregateOn,
+  aggregateOn, // 保留：隐私子模式“聚合展示”
   encryptedGraphs,
   baseGraph,
   graphForRender,
@@ -282,6 +297,10 @@ const {
   demoGraphs,
   initialKey: demoKeys[0] ?? '',
 });
+
+function toggleAggregateGraph() {
+  aggregateGraphOn.value = !aggregateGraphOn.value;
+}
 
 // custom
 const customGraph = ref<GraphData>({ nodes: [], edges: [] });
@@ -326,17 +345,17 @@ const currentGraph = computed(() => {
   return dataSource.value === 'demo' ? graphForRender.value : customGraph.value;
 });
 
-// drawEdges：demo+隐私+聚合 => 不画边
+// drawEdges：demo+隐私+聚合展示 => 不画边
 const drawEdges = computed(() => {
   if (dataSource.value !== 'demo') return true;
   return !(privacyOn.value && aggregateOn.value);
 });
 
-// aggregate stats（按原图）
+// aggregate stats（按 baseGraph：单图或总图都适用）
 const stats = computed(() => computeBalanceStats(baseGraph.value));
 const showAggregateCard = computed(() => dataSource.value === 'demo' && privacyOn.value && aggregateOn.value);
 
-// triad 与 compare/aggregate 互斥
+// triad 与 compare/aggregate（隐私子模式）互斥
 const showTriadPanel = computed(() => {
   return dataSource.value === 'demo' && privacyOn.value && !aggregateOn.value && !compareOn.value;
 });
@@ -350,7 +369,6 @@ const privacySubMode = computed<PrivacySubMode>(() => {
 });
 
 function togglePrivacySubMode(target: Exclude<PrivacySubMode, 'none'>) {
-  // 再点一次同一按钮 => 取消（none）
   const next: PrivacySubMode = privacySubMode.value === target ? 'none' : target;
 
   compareOn.value = next === 'compare';

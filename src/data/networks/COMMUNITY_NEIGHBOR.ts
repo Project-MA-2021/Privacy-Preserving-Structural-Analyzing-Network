@@ -53,10 +53,12 @@ const COMMUNITY_NEIGHBOR: StoredNetwork = {
       // 一点内部冲突（让场景更真实）
       { id: 'e22', source: 'R2', target: 'R5', sign: -1 },
     ],
+    /*
     clusters: {
       R1: 0, R2: 0, R3: 0, R4: 0, R5: 0, R6: 0, COM: 0, WG: 0,
       PM: 1, SEC: 1, CLN: 1, ST: 1,
     },
+    */
   },
 };
 

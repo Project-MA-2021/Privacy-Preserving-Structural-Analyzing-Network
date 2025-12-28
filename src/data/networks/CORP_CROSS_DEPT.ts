@@ -51,10 +51,12 @@ const CORP_CROSS_DEPT: StoredNetwork = {
       { id: 'e21', source: 'PM1', target: 'MK2', sign: 1 },
       { id: 'e22', source: 'OPS', target: 'PM2', sign: 1 },
     ],
+    /*
     clusters: {
       RD1: 0, RD2: 0, RD3: 0, PM1: 0, PM2: 0, QA: 0,
       SA1: 1, SA2: 1, MK1: 1, MK2: 1, OPS: 1, FIN: 1,
     },
+    */
   },
 };
 

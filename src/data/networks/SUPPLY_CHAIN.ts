@@ -51,10 +51,12 @@ const SUPPLY_CHAIN: StoredNetwork = {
       { id: 'e21', source: 'D2', target: 'R1', sign: 1 },
       { id: 'e22', source: 'R1', target: 'C2', sign: 1 },
     ],
+    /*
     clusters: {
       S1: 0, S2: 0, S3: 0, M1: 0, M2: 0, QC: 0,
       D1: 1, D2: 1, R1: 1, R2: 1, C1: 1, C2: 1,
     },
+    */
   },
 };
 

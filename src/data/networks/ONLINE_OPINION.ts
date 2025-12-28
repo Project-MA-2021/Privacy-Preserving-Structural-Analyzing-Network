@@ -51,10 +51,12 @@ const ONLINE_OPINION: StoredNetwork = {
       { id: 'e21', source: 'V1', target: 'U1', sign: -1 },
       { id: 'e22', source: 'KOL2', target: 'U2', sign: -1 },
     ],
+    /*
     clusters: {
       U1: 0, U2: 0, U3: 0, U4: 0, U5: 0, KOL1: 0,
       V1: 1, V2: 1, V3: 1, V4: 1, V5: 1, KOL2: 1,
     },
+    */
   },
 };
 

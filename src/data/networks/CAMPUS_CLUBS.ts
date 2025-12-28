@@ -53,10 +53,12 @@ const CAMPUS_CLUBS: StoredNetwork = {
       { id: 'e21', source: 'A3', target: 'PR', sign: -1 },
       { id: 'e22', source: 'P1', target: 'VOL', sign: 1 },
     ],
+    /*
     clusters: {
       A1: 0, A2: 0, A3: 0, S1: 0, M1: 0, T1: 0,
       P1: 1, P2: 1, P3: 1, SP: 1, VOL: 1, PR: 1,
     },
+    */
   },
 };
 
