@@ -30,16 +30,15 @@ function applyLabels(net: BasicNetwork, labels: number[], field: 'clusterId' | '
 
 export function runClusterPipeline(networks: BasicNetwork[], opts: ClusterPipelineOptions) {
   const allRaw: number[][] = []
-  const perNetRaw: number[][][] = []
+  const counts: number[] = []
 
   for (const net of networks) {
     const raw = computeSignedNodeFeatures(net)
-    perNetRaw.push(raw)
+    counts.push(raw.length)
     allRaw.push(...raw)
   }
 
   const stats = fitStandardize(allRaw)
-
   const allStd = standardize(allRaw, stats)
   const km = kmeans(allStd, { k: opts.k, seed: opts.seed ?? 7 })
 
@@ -48,13 +47,11 @@ export function runClusterPipeline(networks: BasicNetwork[], opts: ClusterPipeli
   const perturbedList: BasicNetwork[] = []
   const clusteredPerturbedList: BasicNetwork[] = []
 
-  for (let ni = 0; ni < networks.length; ni++) {
-    const net = networks[ni]
-    const raw = perNetRaw[ni]
-    const std = standardize(raw, stats)
+  networks.forEach((net, ni) => {
+    const count = counts[ni] ?? net.nodes.length
 
-    const labels0 = km.labels.slice(offset, offset + net.nodes.length)
-    offset += net.nodes.length
+    const labels0 = km.labels.slice(offset, offset + count)
+    offset += count
 
     const clustered0 = applyLabels(net, labels0, 'group')
     clusteredOriginalList.push(clustered0)
@@ -68,12 +65,13 @@ export function runClusterPipeline(networks: BasicNetwork[], opts: ClusterPipeli
     const labels1 = kmeansPredict(pStd, km.centroids)
     const clustered1 = applyLabels(p, labels1, 'group')
     clusteredPerturbedList.push(clustered1)
-  }
+  })
 
   return {
     clusteredOriginalList,
     perturbedList,
     clusteredPerturbedList,
-    model: { stats, kmeans: km }
+    model: { stats, kmeans: km },
   }
 }
+

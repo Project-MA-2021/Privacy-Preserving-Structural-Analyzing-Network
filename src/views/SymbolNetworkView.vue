@@ -282,10 +282,10 @@ const dataSource = ref<DataSourceType>('demo');
 // demo pipeline
 const {
   selectedDemoKey,
-  aggregateGraphOn, // 新增：总图模式开关
+  aggregateGraphOn, // 总图模式开关
   privacyOn,
   compareOn,
-  aggregateOn, // 保留：隐私子模式“聚合展示”
+  aggregateOn, // 隐私子模式“聚合展示”
   encryptedGraphs,
   baseGraph,
   graphForRender,
@@ -293,6 +293,7 @@ const {
   selectDemo,
   reEncryptCurrent,
   clearEncryptionAll,
+  rawGraph,
 } = useDemoGraphPipeline({
   demoGraphs,
   initialKey: demoKeys[0] ?? '',
@@ -352,7 +353,7 @@ const drawEdges = computed(() => {
 });
 
 // aggregate stats（按 baseGraph：单图或总图都适用）
-const stats = computed(() => computeBalanceStats(baseGraph.value));
+const stats = computed(() => computeBalanceStats(rawGraph.value))
 const showAggregateCard = computed(() => dataSource.value === 'demo' && privacyOn.value && aggregateOn.value);
 
 // triad 与 compare/aggregate（隐私子模式）互斥
@@ -388,7 +389,7 @@ const {
   stopAutoplay,
   autoplayOn,
 } = useTriadExplorer({
-  baseGraph,
+  baseGraph: rawGraph,
   enabled: showTriadPanel,
 });
 

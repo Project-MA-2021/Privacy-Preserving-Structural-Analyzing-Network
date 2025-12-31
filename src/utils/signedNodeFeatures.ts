@@ -66,29 +66,51 @@ export function computeSignedNodeFeatures(net: BasicNetwork): number[][] {
 
 export function fitStandardize(all: number[][]): StandardizeStats {
   const dim = all[0]?.length ?? 0
-  const mean = new Array(dim).fill(0)
-  const std = new Array(dim).fill(0)
+  const mean: number[] = new Array(dim).fill(0)
+  const std: number[] = new Array(dim).fill(0)
 
-  for (const x of all) for (let j = 0; j < dim; j++) mean[j] += x[j]
-  for (let j = 0; j < dim; j++) mean[j] /= all.length
-
-  for (const x of all) for (let j = 0; j < dim; j++) {
-    const d = x[j] - mean[j]
-    std[j] += d * d
+  // mean
+  for (const x of all) {
+    for (let j = 0; j < dim; j++) {
+      mean[j] = (mean[j] ?? 0) + (x[j] ?? 0)
+    }
   }
+
+  const denom = Math.max(1, all.length)
   for (let j = 0; j < dim; j++) {
-    std[j] = Math.sqrt(std[j] / Math.max(1, all.length - 1))
-    if (!Number.isFinite(std[j]) || std[j] === 0) std[j] = 1
+    mean[j] = (mean[j] ?? 0) / denom
+  }
+
+  // std
+  for (const x of all) {
+    for (let j = 0; j < dim; j++) {
+      const mj = mean[j] ?? 0
+      const d = (x[j] ?? 0) - mj
+      std[j] = (std[j] ?? 0) + d * d
+    }
+  }
+
+  const denom2 = Math.max(1, all.length - 1)
+  for (let j = 0; j < dim; j++) {
+    let s = Math.sqrt((std[j] ?? 0) / denom2)
+    if (!Number.isFinite(s) || s === 0) s = 1
+    std[j] = s
   }
 
   return { mean, std }
 }
 
+
 export function standardize(x: number[][], stats: StandardizeStats): number[][] {
   const dim = stats.mean.length
-  return x.map(v => {
-    const out = new Array(dim)
-    for (let j = 0; j < dim; j++) out[j] = (v[j] - stats.mean[j]) / stats.std[j]
+  return x.map((v) => {
+    const out: number[] = new Array(dim)
+    for (let j = 0; j < dim; j++) {
+      const vj = v[j] ?? 0
+      const mj = stats.mean[j] ?? 0
+      const sj = stats.std[j] ?? 1
+      out[j] = (vj - mj) / sj
+    }
     return out
   })
 }

@@ -45,7 +45,7 @@ const ONLINE_OPINION: StoredNetwork = {
       { id: 'e17', source: 'U5', target: 'KOL2', sign: -1 },
       { id: 'e18', source: 'KOL1', target: 'V5', sign: -1 },
 
-      // 少量跨团块“合作/认可”（更真实）
+      // 少量跨团块
       { id: 'e19', source: 'U3', target: 'V5', sign: 1 },
       { id: 'e20', source: 'V2', target: 'U4', sign: 1 },
       { id: 'e21', source: 'V1', target: 'U1', sign: -1 },

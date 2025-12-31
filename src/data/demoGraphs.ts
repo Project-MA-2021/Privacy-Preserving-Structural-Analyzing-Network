@@ -4,7 +4,7 @@ import type { GraphData } from '../types/symbolNetwork'
 type GraphMeta = { title: string; desc?: string }
 type AnyModule = Record<string, any>
 
-// 读取 ./networks 目录下所有 ts（按你的工程结构调整：demoGraphs.ts 与 networks 同级）
+// 读取 ./networks 目录下所有 ts（按工程结构调整：demoGraphs.ts 与 networks 同级）
 const modules = import.meta.glob('./networks/*.ts', { eager: true }) as Record<string, AnyModule>
 
 function isGraphData(x: any): x is GraphData {
@@ -47,7 +47,7 @@ function pickNetwork(mod: AnyModule, fallbackKey: string): { key: string; graph:
     }
   }
 
-  // 也兼容命名导出 graph
+  // 兼容命名导出 graph
   if (isGraphData(mod?.graph)) {
     return {
       key: fallbackKey,
@@ -75,7 +75,7 @@ export const demoGraphs: Record<string, GraphData> = Object.fromEntries(list.map
 export const demoGraphMeta: Record<string, GraphMeta> = Object.fromEntries(list.map((x) => [x.key, x.meta]))
 export const demoKeys: string[] = list.map((x) => x.key)
 
-// 可选：方便你调试确认是否读到了边
+// 可选：方便调试确认是否读到了边
 export const demoSummary = list.map((x) => ({
   key: x.key,
   title: x.meta.title,

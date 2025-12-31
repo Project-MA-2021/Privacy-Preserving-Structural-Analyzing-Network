@@ -50,7 +50,7 @@ const COMMUNITY_NEIGHBOR: StoredNetwork = {
       { id: 'e20', source: 'ST', target: 'R4', sign: 1 },
       { id: 'e21', source: 'CLN', target: 'R1', sign: 1 },
 
-      // 一点内部冲突（让场景更真实）
+      // 一点内部冲突
       { id: 'e22', source: 'R2', target: 'R5', sign: -1 },
     ],
     /*

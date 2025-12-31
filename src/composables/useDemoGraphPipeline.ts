@@ -153,21 +153,35 @@ interface StandardizeStats {
 
 function fitStandardize(data: number[][]): StandardizeStats {
   const dim = data[0]?.length ?? 0
-  const mean = new Array(dim).fill(0)
-  const std = new Array(dim).fill(0)
+  const mean: number[] = new Array(dim).fill(0)
+  const std: number[] = new Array(dim).fill(0)
 
-  for (const x of data) for (let j = 0; j < dim; j++) mean[j] += x[j]
-  for (let j = 0; j < dim; j++) mean[j] /= Math.max(1, data.length)
-
+  // mean
   for (const x of data) {
     for (let j = 0; j < dim; j++) {
-      const d = x[j] - mean[j]
-      std[j] += d * d
+      mean[j] = (mean[j] ?? 0) + (x[j] ?? 0)
     }
   }
+
+  const denom = Math.max(1, data.length)
   for (let j = 0; j < dim; j++) {
-    std[j] = Math.sqrt(std[j] / Math.max(1, data.length - 1))
-    if (!Number.isFinite(std[j]) || std[j] === 0) std[j] = 1
+    mean[j] = (mean[j] ?? 0) / denom
+  }
+
+  // std
+  for (const x of data) {
+    for (let j = 0; j < dim; j++) {
+      const mj = mean[j] ?? 0
+      const d = (x[j] ?? 0) - mj
+      std[j] = (std[j] ?? 0) + d * d
+    }
+  }
+
+  const denom2 = Math.max(1, data.length - 1)
+  for (let j = 0; j < dim; j++) {
+    let s = Math.sqrt((std[j] ?? 0) / denom2)
+    if (!Number.isFinite(s) || s === 0) s = 1
+    std[j] = s
   }
 
   return { mean, std }
@@ -176,8 +190,13 @@ function fitStandardize(data: number[][]): StandardizeStats {
 function standardize(data: number[][], stats: StandardizeStats): number[][] {
   const dim = stats.mean.length
   return data.map((x) => {
-    const out = new Array(dim)
-    for (let j = 0; j < dim; j++) out[j] = (x[j] - stats.mean[j]) / stats.std[j]
+    const out: number[] = new Array(dim)
+    for (let j = 0; j < dim; j++) {
+      const xj = x[j] ?? 0
+      const mj = stats.mean[j] ?? 0
+      const sj = stats.std[j] ?? 1
+      out[j] = (xj - mj) / sj
+    }
     return out
   })
 }
@@ -193,27 +212,34 @@ interface KMeansResult {
 function dist2(a: number[], b: number[]): number {
   let s = 0
   for (let i = 0; i < a.length; i++) {
-    const d = a[i] - b[i]
+    const ai = a[i] ?? 0
+    const bi = b[i] ?? 0
+    const d = ai - bi
     s += d * d
   }
   return s
 }
 
 function meanVec(points: number[][], dim: number): number[] {
-  const c = new Array(dim).fill(0)
+  const c: number[] = new Array(dim).fill(0)
   if (points.length === 0) return c
-  for (const p of points) for (let i = 0; i < dim; i++) c[i] += p[i]
-  for (let i = 0; i < dim; i++) c[i] /= points.length
+  for (const p of points) {
+    for (let i = 0; i < dim; i++) {
+      c[i] = (c[i] ?? 0) + (p[i] ?? 0)
+    }
+  }
+  for (let i = 0; i < dim; i++) c[i] = (c[i] ?? 0) / points.length
   return c
 }
 
 function pickWeightedIndex(rng: () => number, weights: number[]): number {
   let total = 0
-  for (const w of weights) total += w
+  for (const w of weights) total += w ?? 0
   if (total <= 0) return 0
+
   let r = rng() * total
   for (let i = 0; i < weights.length; i++) {
-    r -= weights[i]
+    r -= weights[i] ?? 0
     if (r <= 0) return i
   }
   return weights.length - 1
@@ -443,10 +469,10 @@ export function useDemoGraphPipeline(args: UseDemoGraphPipelineArgs) {
 
   const selectedDemoKey = ref<string>(initialKey)
 
-  // ✅ 总图模式：聚合全部示例网络为一张图再跑管线
+  // 总图模式：聚合全部示例网络为一张图再跑管线
   const aggregateGraphOn = ref(false)
 
-  // ✅ 隐私子模式：聚合展示（你 SymbolNetworkView.vue 已在用）
+  // 隐私子模式：聚合展示（SymbolNetworkView.vue 已在用）
   const aggregateOn = ref(false)
 
   const privacyOn = ref(false)
@@ -464,8 +490,9 @@ export function useDemoGraphPipeline(args: UseDemoGraphPipelineArgs) {
     if (aggregateGraphOn.value) return aggregatedRawGraph.value
     return demoGraphs[selectedDemoKey.value] ?? ({ nodes: [], edges: [] } as any as GraphData)
   })
+  const rawGraph = computed<GraphData>(() => activeRawGraph.value)
 
-  // ✅ 必须是 {}，并且必须 return
+  // 必须是 {}，并且必须 return
   const encryptedGraphs = ref<Record<string, GraphData>>({})
   const encryptedSeeds = ref<Record<string, number>>({})
 
@@ -542,20 +569,27 @@ export function useDemoGraphPipeline(args: UseDemoGraphPipelineArgs) {
   })
 
   const graphForRender = computed<GraphData | GraphDataWithEdgeKind>(() => {
-    if (!privacyOn.value) return baseGraph.value
+    // 默认展示“原始图”（不带 clusters/group）
+    if (!privacyOn.value) return rawGraph.value
+  
+    // 隐私模式下：要么对比，要么展示扰动后再聚簇的结果
     if (compareOn.value) return compareGraph.value
     return encryptedCurrentGraph.value
   })
+  
+  
 
   return {
     selectedDemoKey,
-    aggregateGraphOn, // ✅ 总图模式按钮用
-    aggregateOn,      // ✅ 隐私子模式“聚合展示”用
+    aggregateGraphOn, // 总图模式按钮用
+    aggregateOn,      // 隐私子模式“聚合展示”用
     privacyOn,
     compareOn,
 
-    encryptedGraphs,  // ✅ 你模板 Object.keys 需要这个
-    encryptedSeeds,   // ✅ 可选但建议保留
+    rawGraph,
+
+    encryptedGraphs,  // 模板 Object.keys 需要这个
+    encryptedSeeds,   // 可选但建议保留
 
     baseGraph,
     encryptedCurrentGraph,

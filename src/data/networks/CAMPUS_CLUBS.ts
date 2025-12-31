@@ -49,7 +49,7 @@ const CAMPUS_CLUBS: StoredNetwork = {
       { id: 'e19', source: 'PR', target: 'S1', sign: 1 },
       { id: 'e20', source: 'SP', target: 'M1', sign: 1 },
 
-      // 让结构更丰富一点
+      // 结构更丰富
       { id: 'e21', source: 'A3', target: 'PR', sign: -1 },
       { id: 'e22', source: 'P1', target: 'VOL', sign: 1 },
     ],
