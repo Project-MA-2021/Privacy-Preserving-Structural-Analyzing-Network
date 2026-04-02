@@ -323,6 +323,34 @@
           <span class="replay-progress-bar" :style="{ width: `${replayProgressPct}%` }"></span>
         </div>
 
+        <div class="process-trend" :class="{ empty: !pgsbcTaskState }">
+          <div class="process-trend-head">
+            <span class="trend-title">h_t 趋势</span>
+            <span class="trend-hint" v-if="pgsbcTaskState">实时/回放同步 · 绿点=accept · 黄点=reject</span>
+            <span class="trend-hint" v-else>创建任务后显示趋势曲线</span>
+          </div>
+          <div class="process-trend-chart" v-if="pgsbcTaskState">
+            <svg viewBox="0 0 320 96" preserveAspectRatio="none">
+              <rect x="0" y="0" width="320" height="96" fill="transparent" />
+              <polyline
+                v-if="hCurvePoints"
+                :points="hCurvePoints"
+                fill="none"
+                stroke="rgba(125, 211, 252, 0.95)"
+                stroke-width="2.5"
+              />
+              <circle
+                v-for="dot in hCurveDots"
+                :key="dot.i"
+                :cx="dot.x"
+                :cy="dot.y"
+                r="3.6"
+                :fill="dot.accepted ? '#34d399' : '#f59e0b'"
+              />
+            </svg>
+          </div>
+        </div>
+
         <div class="step-track">
           <div v-for="step in stepTrack" :key="step.id" class="step-node" :class="step.status" :title="step.desc">
             <div class="step-index">S{{ step.id }}</div>
@@ -440,28 +468,6 @@
               <div>last accepted h: {{ formatNumber(pgsbcTaskState.last_accepted_h) }}</div>
               <div>current real h: {{ formatNumber(pgsbcTaskState.current_h_real) }}</div>
               <div>c_history: {{ pgsbcTaskState.c_history.join(', ') || '-' }}</div>
-            </div>
-
-            <div class="pgsbc-chart">
-              <svg viewBox="0 0 320 96" preserveAspectRatio="none">
-                <rect x="0" y="0" width="320" height="96" fill="transparent" />
-                <polyline
-                  v-if="hCurvePoints"
-                  :points="hCurvePoints"
-                  fill="none"
-                  stroke="rgba(125, 211, 252, 0.95)"
-                  stroke-width="2.5"
-                />
-                <circle
-                  v-for="dot in hCurveDots"
-                  :key="dot.i"
-                  :cx="dot.x"
-                  :cy="dot.y"
-                  r="3.6"
-                  :fill="dot.accepted ? '#34d399' : '#f59e0b'"
-                />
-              </svg>
-              <div class="pgsbc-legend">曲线=observed h_t · 绿点=accept · 黄点=reject</div>
             </div>
 
             <div class="pgsbc-events">
