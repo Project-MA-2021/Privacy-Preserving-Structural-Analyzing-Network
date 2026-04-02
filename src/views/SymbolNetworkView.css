@@ -377,3 +377,121 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ---- PGSBC control (sidebar) ---- */
+.pgsbc-control .form-row {
+  margin-bottom: 8px;
+}
+
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task-error {
+  color: #fda4af;
+}
+
+/* ---- PGSBC evidence card ---- */
+.pgsbc-card {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: 420px;
+  max-width: calc(100% - 36px);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  padding: 14px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.pgsbc-title {
+  font-weight: 800;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.pgsbc-meta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 8px;
+}
+
+.pgsbc-chart {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pgsbc-chart svg {
+  width: 100%;
+  height: 96px;
+  display: block;
+}
+
+.pgsbc-legend {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.pgsbc-events {
+  margin-top: 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 8px;
+}
+
+.pgsbc-events-title {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  margin-bottom: 6px;
+}
+
+.pgsbc-event {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pgsbc-event-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pgsbc-step {
+  display: inline-flex;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.pgsbc-actor {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pgsbc-msg {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.pgsbc-payload {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.68);
+  word-break: break-word;
+}

@@ -174,6 +174,76 @@
           <p class="hint">当前边：{{ customGraph.edges.length }} 条</p>
         </div>
       </div>
+
+      <div class="sidebar-section pgsbc-control">
+        <label class="section-label">PGSBC 任务（双服务器）</label>
+
+        <div class="form-block">
+          <div class="form-row">
+            <input
+              v-model.number="pgsbcMaxIter"
+              class="input"
+              type="number"
+              min="1"
+              step="1"
+              placeholder="max_iter"
+            />
+            <input
+              v-model.number="pgsbcRb"
+              class="input"
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              placeholder="rb"
+            />
+          </div>
+
+          <div class="task-actions">
+            <button class="btn btn-small" type="button" :disabled="pgsbcLoading" @click="createPgsbcTask">
+              {{ pgsbcHasTask ? '重建任务' : '创建任务' }}
+            </button>
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone"
+              @click="iteratePgsbcTask"
+            >
+              下一轮
+            </button>
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone"
+              @click="togglePgsbcAutoplay"
+            >
+              {{ pgsbcAutoplayOn ? '停止自动' : '自动运行' }}
+            </button>
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="!pgsbcHasTask || pgsbcLoading"
+              @click="resetPgsbcTask"
+            >
+              重置
+            </button>
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="!pgsbcHasTask || pgsbcLoading"
+              @click="refreshPgsbcTask"
+            >
+              刷新
+            </button>
+          </div>
+
+          <p class="hint">API：{{ apiBaseUrl }}</p>
+          <p class="hint" v-if="pgsbcTaskState">
+            任务 {{ pgsbcTaskState.id }} · 状态 {{ pgsbcTaskState.status }} · t={{ pgsbcTaskState.t }}/{{ pgsbcTaskState.max_iter }}
+          </p>
+          <p class="hint task-error" v-if="pgsbcError">{{ pgsbcError }}</p>
+        </div>
+      </div>
     </aside>
 
     <main class="symbol-main">
@@ -261,6 +331,52 @@
 
           <div class="triad-foot">图上高亮规则：当前 triad 的 3 条边会加粗并统一显示为橙色。</div>
         </div>
+
+        <div v-if="pgsbcTaskState" class="pgsbc-card">
+          <div class="pgsbc-title">PGSBC 迭代证据</div>
+
+          <div class="pgsbc-meta">
+            <div>last accepted h: {{ formatNumber(pgsbcTaskState.last_accepted_h) }}</div>
+            <div>current real h: {{ formatNumber(pgsbcTaskState.current_h_real) }}</div>
+            <div>c_history: {{ pgsbcTaskState.c_history.join(', ') || '-' }}</div>
+          </div>
+
+          <div class="pgsbc-chart">
+            <svg viewBox="0 0 320 96" preserveAspectRatio="none">
+              <rect x="0" y="0" width="320" height="96" fill="transparent" />
+              <polyline
+                v-if="hCurvePoints"
+                :points="hCurvePoints"
+                fill="none"
+                stroke="rgba(102, 204, 255, 0.95)"
+                stroke-width="2.5"
+              />
+              <circle
+                v-for="dot in hCurveDots"
+                :key="dot.i"
+                :cx="dot.x"
+                :cy="dot.y"
+                r="3.6"
+                :fill="dot.accepted ? '#22c55e' : '#f59e0b'"
+              />
+            </svg>
+            <div class="pgsbc-legend">曲线=observed h_t · 绿点=accept · 黄点=reject</div>
+          </div>
+
+          <div class="pgsbc-events">
+            <div class="pgsbc-events-title">最近事件</div>
+            <div class="pgsbc-event" v-for="(event, idx) in recentTimelineEvents" :key="`${event.ts}-${idx}`">
+              <div class="pgsbc-event-main">
+                <span class="pgsbc-step">S{{ event.step }}</span>
+                <span class="pgsbc-actor">{{ event.actor }}</span>
+                <span class="pgsbc-msg">{{ event.message }}</span>
+              </div>
+              <div class="pgsbc-payload" v-if="formatPayload(event.payload)">
+                {{ formatPayload(event.payload) }}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -275,6 +391,7 @@ import { useDemoGraphPipeline } from '../composables/useDemoGraphPipeline';
 import { useSphereChart } from '../composables/useSphereChart';
 import { computeBalanceStats } from '../utils/graphStats';
 import { useTriadExplorer } from '../composables/useTriadExplorer';
+import { usePgsbcTask } from '../composables/usePgsbcTask';
 
 type DataSourceType = 'demo' | 'custom';
 const dataSource = ref<DataSourceType>('demo');
@@ -345,6 +462,9 @@ function addEdge() {
 const currentGraph = computed(() => {
   return dataSource.value === 'demo' ? graphForRender.value : customGraph.value;
 });
+const graphForTask = computed<GraphData>(() => {
+  return dataSource.value === 'demo' ? rawGraph.value : customGraph.value;
+});
 
 // drawEdges：demo+隐私+聚合展示 => 不画边
 const drawEdges = computed(() => {
@@ -402,6 +522,98 @@ function prevTriad() {
 function toggleAutoplay() {
   if (autoplayOn.value) stopAutoplay();
   else startAutoplay(1200);
+}
+
+const {
+  apiBaseUrl,
+  task: pgsbcTask,
+  timeline: pgsbcTimeline,
+  maxIter: pgsbcMaxIter,
+  rb: pgsbcRb,
+  loading: pgsbcLoading,
+  error: pgsbcError,
+  hasTask: pgsbcHasTask,
+  isDone: pgsbcIsDone,
+  autoplayOn: pgsbcAutoplayOn,
+  createTask,
+  iterateOnce,
+  resetTask,
+  refreshState,
+  refreshTimeline,
+  startAutoplay: startPgsbcAutoplay,
+  stopAutoplay: stopPgsbcAutoplay,
+} = usePgsbcTask();
+
+const pgsbcTaskState = computed(() => pgsbcTask.value);
+const recentTimelineEvents = computed(() => pgsbcTimeline.value.slice(-10).reverse());
+
+function createPgsbcTask() {
+  void createTask(graphForTask.value);
+}
+function iteratePgsbcTask() {
+  void iterateOnce();
+}
+function resetPgsbcTask() {
+  void resetTask();
+}
+function refreshPgsbcTask() {
+  void Promise.all([refreshState(), refreshTimeline()]);
+}
+function togglePgsbcAutoplay() {
+  if (pgsbcAutoplayOn.value) stopPgsbcAutoplay();
+  else startPgsbcAutoplay(1500);
+}
+
+const CHART_W = 320;
+const CHART_H = 96;
+const CHART_PAD_X = 16;
+const CHART_PAD_Y = 12;
+
+const observedHHistory = computed<number[]>(() => pgsbcTaskState.value?.observed_h_history ?? []);
+const cHistory = computed<number[]>(() => pgsbcTaskState.value?.c_history ?? []);
+
+const hCurveDots = computed(() => {
+  const values = observedHHistory.value;
+  if (!values.length) return [];
+
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const span = Math.max(1e-6, maxVal - minVal);
+  const innerW = CHART_W - CHART_PAD_X * 2;
+  const innerH = CHART_H - CHART_PAD_Y * 2;
+  const denom = Math.max(1, values.length - 1);
+
+  return values.map((v, i) => {
+    const x = CHART_PAD_X + (innerW * i) / denom;
+    const y = CHART_PAD_Y + innerH - ((v - minVal) / span) * innerH;
+    return {
+      i,
+      x: Number(x.toFixed(2)),
+      y: Number(y.toFixed(2)),
+      value: v,
+      accepted: (cHistory.value[i] ?? 0) === 1,
+    };
+  });
+});
+
+const hCurvePoints = computed(() => hCurveDots.value.map((d) => `${d.x},${d.y}`).join(' '));
+
+function formatPayload(payload: Record<string, unknown> | undefined) {
+  if (!payload) return '';
+  const entries = Object.entries(payload).filter(([, v]) => v !== null && v !== undefined);
+  if (!entries.length) return '';
+  return entries
+    .slice(0, 4)
+    .map(([k, v]) => {
+      if (typeof v === 'number') return `${k}=${Number(v).toFixed(2)}`;
+      return `${k}=${String(v)}`;
+    })
+    .join(' · ');
+}
+
+function formatNumber(v: number | null) {
+  if (v === null || v === undefined) return '-';
+  return Number(v).toFixed(2);
 }
 
 // chart
