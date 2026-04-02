@@ -1,0 +1,503 @@
+论文可视化项目双机部署流程与命令文档
+==================================
+
+一、部署目标
+------------
+采用双机部署：
+
+1. app-server（公网）
+   - 前端静态页面
+   - Nginx
+   - server1
+
+2. crypto-server（内网/白名单）
+   - server2
+
+当前实际部署关系：
+- app-server 内网 IP：172.16.0.11
+- crypto-server 内网 IP：172.16.0.8
+
+注意：
+- app-server 通过内网地址访问 crypto-server
+- SERVER2_URL 固定写为：http://172.16.0.8:5002
+
+--------------------------------------------------
+
+二、服务器购买建议
+------------------
+两台机器都建议：
+- Ubuntu Server 22.04 LTS 64位
+- 2核4G
+- 系统盘 50GiB
+- 同地域
+- 同可用区
+- 同 VPC
+- 同子网
+
+建议：
+- app-server 开公网 IP
+- crypto-server 也可开公网 IP，方便维护
+- 两台机器间业务通信走内网 IP
+
+--------------------------------------------------
+
+三、安全组建议
+--------------
+1. app-server 安全组建议开放：
+- TCP 22
+- TCP 80
+- TCP 443
+- 放通内网
+- ICMP 可选
+- 不需要 TCP 3389
+
+2. crypto-server 安全组建议开放：
+- TCP 22
+- TCP 5002（最好限制来源为 app-server 内网 IP）
+- 放通内网
+- ICMP 可选
+- 不需要 TCP 80
+- 不需要 TCP 443
+- 不需要 TCP 3389
+
+--------------------------------------------------
+
+四、登录服务器
+--------------
+Windows PowerShell 登录示例：
+
+1. 登录 app-server
+ssh ubuntu@<app-server公网IP>
+
+2. 登录 crypto-server
+ssh ubuntu@<crypto-server公网IP>
+
+说明：
+- Ubuntu 默认用户名一般是 ubuntu
+- 输入密码时终端不会显示字符，这是正常的
+
+--------------------------------------------------
+
+五、基础环境安装（两台机器都执行）
+----------------------------------
+sudo apt update
+sudo apt install -y git curl python3-venv python3-pip
+
+检查版本：
+git --version
+python3 --version
+
+--------------------------------------------------
+
+六、拉取项目代码（两台机器都执行）
+----------------------------------
+cd ~
+rm -rf ~/paper-visualization
+git clone https://github.com/Project-MA-2021/Privacy-Preserving-Structural-Analyzing-Network.git ~/paper-visualization
+
+检查目录：
+cd ~/paper-visualization
+pwd
+ls
+find backend -maxdepth 3 -type f | sort
+
+预期至少存在：
+- backend/requirements.txt
+- backend/server1/app.py
+- backend/server2/app.py
+- backend/shared_contract/crypto.py
+
+--------------------------------------------------
+
+七、创建 Python 虚拟环境并安装依赖（两台机器都执行）
+------------------------------------------------------
+cd ~/paper-visualization/backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+检查：
+python --version
+pip --version
+
+--------------------------------------------------
+
+八、手工启动后端进行第一次联调
+------------------------------
+A. 启动 crypto-server 的 server2
+在 crypto-server 上执行：
+
+cd ~/paper-visualization/backend
+source .venv/bin/activate
+python -m server2.app
+
+另开一个 crypto-server 终端测试：
+curl http://127.0.0.1:5002/api/v1/crypto/health
+
+预期返回：
+{
+  "data": {
+    "key_loaded": false,
+    "service": "server2"
+  },
+  "ok": true
+}
+
+B. 启动 app-server 的 server1
+在 app-server 上执行：
+
+cd ~/paper-visualization/backend
+source .venv/bin/activate
+export SERVER2_URL=http://172.16.0.8:5002
+python -m server1.app
+
+另开一个 app-server 终端测试：
+curl http://127.0.0.1:5001/api/v1/health
+
+预期返回：
+{
+  "data": {
+    "service": "server1",
+    "tasks": 0
+  },
+  "ok": true
+}
+
+C. 测试双机联动
+在 app-server 上执行：
+
+curl -X POST http://127.0.0.1:5001/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+预期返回 task 对象 JSON，表示 server1 -> server2 联动成功。
+
+--------------------------------------------------
+
+九、修正 Flask debug 模式，避免 systemd 托管失败
+------------------------------------------------
+原因：
+原始 app.py 使用了 debug=True，配合 Flask reloader 在 systemd 下容易出问题。
+
+需要改成：
+- debug=False
+- use_reloader=False
+
+1. 修改 crypto-server 的 server2/app.py
+cd ~/paper-visualization/backend/server2
+cp app.py app.py.bak
+
+把原来的：
+app.run(host="0.0.0.0", port=5002, debug=True)
+
+改成：
+app.run(host="0.0.0.0", port=5002, debug=False, use_reloader=False)
+
+可用脚本替换：
+python3 - <<'PY'
+from pathlib import Path
+p = Path("app.py")
+s = p.read_text()
+old = 'app.run(host="0.0.0.0", port=5002, debug=True)'
+new = 'app.run(host="0.0.0.0", port=5002, debug=False, use_reloader=False)'
+if old not in s:
+    raise SystemExit("未找到目标文本")
+p.write_text(s.replace(old, new))
+print("patched server2/app.py")
+PY
+
+2. 修改 app-server 的 server1/app.py
+cd ~/paper-visualization/backend/server1
+cp app.py app.py.bak
+
+把原来的：
+app.run(host="0.0.0.0", port=5001, debug=True)
+
+改成：
+app.run(host="0.0.0.0", port=5001, debug=False, use_reloader=False)
+
+可用脚本替换：
+python3 - <<'PY'
+from pathlib import Path
+p = Path("app.py")
+s = p.read_text()
+old = 'app.run(host="0.0.0.0", port=5001, debug=True)'
+new = 'app.run(host="0.0.0.0", port=5001, debug=False, use_reloader=False)'
+if old not in s:
+    raise SystemExit("未找到目标文本")
+p.write_text(s.replace(old, new))
+print("patched server1/app.py")
+PY
+
+--------------------------------------------------
+
+十、配置 systemd 开机自启
+------------------------
+A. crypto-server：server2
+创建文件：
+sudo nano /etc/systemd/system/paper-server2.service
+
+内容如下：
+[Unit]
+Description=paper visualization server2
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/paper-visualization/backend
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/paper-visualization/backend/.venv/bin/python -m server2.app
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+启用：
+sudo systemctl daemon-reload
+sudo systemctl enable paper-server2
+sudo systemctl start paper-server2
+
+检查：
+sudo systemctl status paper-server2 --no-pager
+ss -ltnp | grep 5002
+curl http://127.0.0.1:5002/api/v1/crypto/health
+
+B. app-server：server1
+创建文件：
+sudo nano /etc/systemd/system/paper-server1.service
+
+内容如下：
+[Unit]
+Description=paper visualization server1
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/paper-visualization/backend
+Environment=PYTHONUNBUFFERED=1
+Environment=SERVER2_URL=http://172.16.0.8:5002
+ExecStart=/home/ubuntu/paper-visualization/backend/.venv/bin/python -m server1.app
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+启用：
+sudo systemctl daemon-reload
+sudo systemctl enable paper-server1
+sudo systemctl start paper-server1
+
+检查：
+sudo systemctl status paper-server1 --no-pager
+ss -ltnp | grep 5001
+curl http://127.0.0.1:5001/api/v1/health
+
+C. 如果 systemd 启动失败，但 curl 端口又是通的
+通常是之前手工运行的 Flask 进程还占着端口。
+
+可先清理旧进程：
+sudo systemctl stop paper-server1
+pkill -f 'server1.app'
+sudo systemctl reset-failed paper-server1
+sudo systemctl start paper-server1
+
+sudo systemctl stop paper-server2
+pkill -f 'server2.app'
+sudo systemctl reset-failed paper-server2
+sudo systemctl start paper-server2
+
+--------------------------------------------------
+
+十一、安装 Node.js 并构建前端（只在 app-server 执行）
+---------------------------------------------------
+安装 Node.js：
+sudo apt update
+sudo apt install -y curl
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+检查版本：
+node -v
+npm -v
+
+构建前端：
+cd ~/paper-visualization
+npm ci
+npm run build
+
+如果 npm ci 失败，则改用：
+npm install
+npm run build
+
+检查构建结果：
+ls dist
+
+--------------------------------------------------
+
+十二、安装并配置 Nginx（只在 app-server 执行）
+----------------------------------------------
+1. 安装 Nginx
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+sudo systemctl status nginx --no-pager
+
+2. 拷贝前端静态文件
+sudo mkdir -p /var/www/paper-visualization
+sudo cp -r ~/paper-visualization/dist/* /var/www/paper-visualization/
+ls /var/www/paper-visualization
+
+3. 配置站点
+sudo nano /etc/nginx/sites-available/paper-visualization
+
+写入：
+server {
+    listen 80;
+    server_name _;
+
+    root /var/www/paper-visualization;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+
+4. 启用配置
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo ln -sf /etc/nginx/sites-available/paper-visualization /etc/nginx/sites-enabled/paper-visualization
+sudo nginx -t
+sudo systemctl restart nginx
+
+5. 本机测试
+curl http://127.0.0.1
+curl http://127.0.0.1/api/v1/health
+
+预期：
+- 第一个返回前端 HTML
+- 第二个返回 server1 的健康检查 JSON
+
+--------------------------------------------------
+
+十三、整体验收
+--------------
+1. crypto-server 验收
+systemctl status paper-server2 --no-pager
+curl http://127.0.0.1:5002/api/v1/crypto/health
+
+2. app-server 验收
+systemctl status paper-server1 --no-pager
+systemctl status nginx --no-pager
+curl http://127.0.0.1:5001/api/v1/health
+curl http://127.0.0.1/api/v1/health
+
+3. 联动验收
+curl -X POST http://127.0.0.1:5001/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+4. 浏览器公网访问
+打开：
+http://<app-server公网IP>
+
+接口测试：
+http://<app-server公网IP>/api/v1/health
+
+--------------------------------------------------
+
+十四、重启后验证
+----------------
+由于已经启用了 systemd，理论上机器重启后会自动恢复服务。
+
+1. 重启服务器
+sudo reboot
+
+2. 重启后重新登录检查
+
+crypto-server：
+systemctl status paper-server2 --no-pager
+curl http://127.0.0.1:5002/api/v1/crypto/health
+
+app-server：
+systemctl status paper-server1 --no-pager
+systemctl status nginx --no-pager
+curl http://127.0.0.1:5001/api/v1/health
+curl http://127.0.0.1/api/v1/health
+
+--------------------------------------------------
+
+十五、常见问题
+--------------
+1. curl 127.0.0.1:5001/5002 连接被拒绝
+原因：
+- 对应服务没启动
+- systemd 启动失败
+- 端口被旧进程占用
+
+排查：
+ss -ltnp | grep 5001
+ss -ltnp | grep 5002
+journalctl -u paper-server1 -n 50 --no-pager
+journalctl -u paper-server2 -n 50 --no-pager
+
+2. systemd 显示 active，但 curl 不通
+常见原因：
+- Flask debug/reloader 导致 systemd 进程模型异常
+解决：
+- 改 app.run 的 debug=False, use_reloader=False
+
+3. 启动失败提示 Address already in use
+原因：
+- 手工运行的 python -m server1.app / server2.app 还在
+解决：
+pkill -f 'server1.app'
+pkill -f 'server2.app'
+
+4. 服务器重启后公网 IP 变化
+影响：
+- SSH 登录地址变化
+- 浏览器访问地址变化
+
+一般不影响：
+- 双机内网互调
+因为 server1 指向的是内网地址 172.16.0.8:5002
+
+如果希望公网 IP 固定：
+- 给实例绑定 EIP（弹性公网 IP）
+
+--------------------------------------------------
+
+十六、当前部署口径总结
+----------------------
+本项目采用双机部署架构：
+
+1. app-server
+   - 部署前端静态页面
+   - 部署 Nginx
+   - 部署协调服务 server1
+   - 对外提供统一访问入口
+
+2. crypto-server
+   - 部署密码学服务 server2
+   - 仅通过内网提供服务
+
+3. 服务关系
+   - 浏览器 -> app-server:80 -> Nginx
+   - Nginx -> server1:5001
+   - server1 -> crypto-server:5002（内网）
+
+4. 服务托管
+   - server1：systemd
+   - server2：systemd
+   - nginx：systemd
+
+至此，双机后端、前端静态页面、Nginx 反向代理、开机自启全部完成。
