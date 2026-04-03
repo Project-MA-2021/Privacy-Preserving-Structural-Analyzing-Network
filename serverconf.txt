@@ -74,7 +74,7 @@ ssh ubuntu@<crypto-server公网IP>
 
 说明：
 - Ubuntu 默认用户名一般是 ubuntu
-- 输入密码时终端不会显示字符，这是正常的
+- 输入密码时终端默认不显示字符，注意正确输入
 
 --------------------------------------------------
 
@@ -501,3 +501,12 @@ pkill -f 'server2.app'
    - nginx：systemd
 
 至此，双机后端、前端静态页面、Nginx 反向代理、开机自启全部完成。
+
+每次开机后，可使用以下命令检查服务状态：
+# crypto-server
+sudo systemctl is-active paper-server2
+curl -s http://127.0.0.1:5002/api/v1/crypto/health
+
+# app-server
+sudo systemctl is-active paper-server1 nginx
+curl -s http://127.0.0.1/api/v1/health
