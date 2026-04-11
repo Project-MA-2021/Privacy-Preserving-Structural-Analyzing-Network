@@ -152,13 +152,13 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     layoutMode === 'clustered' && Object.keys(clusters).length > 0
       ? computeClusteredLayout(graph.nodes, clusters, radius)
       : computeSphereLayout(graph.nodes, radius);
-  const verticalScale = 0.8;
+  const verticalScale = 0.82;
   const coords: Record<string, Coord3D> = {};
   for (const [nodeId, coord] of Object.entries(baseCoords)) {
     coords[nodeId] = [coord[0], coord[1] * verticalScale, coord[2]];
   }
-  const axisExtent = radius * 2.0;
-  const axisExtentY = radius * 2.5;
+  const axisExtent = radius * 1.75;
+  const axisExtentY = radius * 2.25;
 
   let cx = 0;
   let cy = 0;
@@ -189,7 +189,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
       clusterIndex: cIndex,
 
       // per-node 大小
-      symbolSize: hi ? 10 : 6,
+      symbolSize: hi ? 11 : 7,
 
       itemStyle: {
         color: baseColor,
@@ -284,8 +284,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
         autoRotate: true,
         autoRotateSpeed: 5,
         projection: 'perspective',
-        distance: 210,
-        minDistance: 115,
+        distance: 188,
+        minDistance: 108,
         maxDistance: 420,
         targetCoord,
       },
@@ -298,7 +298,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
         type: 'scatter3D',
         coordinateSystem: 'cartesian3D',
         // 这里保持一个默认值，单点可被 data[i].symbolSize 覆盖
-        symbolSize: 6,
+        symbolSize: 7,
         data: nodeData,
         label: {
           show: true,

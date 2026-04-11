@@ -39,20 +39,11 @@
             </button>
           </div>
 
-          <div class="batch-actions">
-            <button class="btn btn-small" type="button" :disabled="batchRunning || pgsbcLoading" @click="startDemoBatch">
-              全部示例批处理
-            </button>
-            <button class="btn btn-small" type="button" :disabled="!batchRunning" @click="stopDemoBatch">停止批处理</button>
-            <button class="btn btn-small" type="button" :disabled="batchRunning || !batchResults.length" @click="clearBatchResults">
-              清空记录
-            </button>
-          </div>
           <p class="hint" v-if="batchRunning">
-            正在处理：{{ demoGraphMeta[batchCurrentKey]?.title ?? batchCurrentKey }}（{{ batchDoneCount }}/{{ demoKeys.length }}）
+            外层流程进行中：{{ demoGraphMeta[batchCurrentKey]?.title ?? batchCurrentKey }}（{{ batchDoneCount }}/{{ demoKeys.length }}）
           </p>
           <p class="hint" v-else-if="batchResults.length">
-            批处理完成：成功 {{ batchSuccessCount }} / 失败 {{ batchFailCount }} / 中断 {{ batchStoppedCount }}
+            外层流程完成：成功 {{ batchSuccessCount }} / 失败 {{ batchFailCount }} / 中断 {{ batchStoppedCount }}
           </p>
         </section>
 
@@ -115,13 +106,13 @@
           </div>
 
           <div class="task-actions">
-            <button class="btn btn-small" type="button" :disabled="pgsbcLoading || batchRunning" @click="createPgsbcTask">
-              {{ pgsbcHasTask ? '重建任务' : '创建任务' }}
+            <button class="btn btn-small" type="button" :disabled="pgsbcLoading && !batchRunning" @click="createPgsbcTask">
+              {{ dataSource === 'demo' ? (batchRunning ? '停止流程' : '运行 PGSBC 流程') : pgsbcHasTask ? '重建任务' : '创建任务' }}
             </button>
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
+              :disabled="dataSource === 'demo' || !pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
               @click="iteratePgsbcTask"
             >
               下一轮
@@ -129,7 +120,7 @@
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
+              :disabled="dataSource === 'demo' || !pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
               @click="togglePgsbcAutoplay"
             >
               {{ pgsbcAutoplayOn ? '停止自动' : '自动运行' }}
@@ -172,6 +163,7 @@
           <p class="hint" v-if="pgsbcTaskState">
             task={{ pgsbcTaskState.id }} · {{ pgsbcTaskState.status }} · t={{ pgsbcTaskState.t }}/{{ pgsbcTaskState.max_iter }}
           </p>
+          <p class="hint">流程语义：外层按网络集循环，内层按单网络执行 Step1-Step8。</p>
           <p class="hint" v-if="pgsbcTaskState">已记录轮次：{{ pgsbcRoundCount }}</p>
           <p class="hint task-error" v-if="pgsbcError">{{ pgsbcError }}</p>
         </section>
@@ -182,6 +174,7 @@
       <section class="process-board">
         <div class="process-head">
           <span class="pill">{{ taskGraphTitle }}</span>
+          <span class="pill" v-if="batchRunning">网络集流程 {{ Math.min(batchDoneCount + 1, demoKeys.length) }}/{{ demoKeys.length }}</span>
           <span class="pill" v-if="pgsbcTaskState">状态 {{ pgsbcTaskState.status }}</span>
           <span class="pill" v-if="pgsbcTaskState">当前步骤 {{ activeStepText }}</span>
           <span class="pill replay-pill" v-if="isReplayMode">Step 回放中</span>
@@ -209,7 +202,7 @@
           </div>
           <div class="replay-meta" v-if="replayCurrentEvent">
             回放 {{ replayCursor + 1 }}/{{ replayTotal }} · t={{ replayCurrentEvent.t }} · S{{ replayCurrentEvent.step }} ·
-            {{ replayCurrentEvent.actor }}
+            {{ replayCurrentEvent.actor }} · {{ replayCurrentEvent.network_title ?? taskGraphTitle }}
           </div>
           <div class="replay-meta" v-else-if="replayHasEvents">未进入回放，当前显示实时最新状态</div>
           <div class="replay-meta" v-else>暂无可回放事件（先执行至少一轮迭代）</div>
@@ -379,7 +372,7 @@
           </section>
 
           <section class="insight-card">
-            <div class="insight-title">网络集批处理结果</div>
+            <div class="insight-title">网络集 PGSBC 结果</div>
             <div class="round-table-wrap" v-if="batchResults.length">
               <table class="round-table">
                 <thead>
@@ -400,7 +393,7 @@
                 </tbody>
               </table>
             </div>
-            <p class="insight-text" v-else>尚未执行网络集批处理。</p>
+            <p class="insight-text" v-else>尚未运行网络集 PGSBC。</p>
           </section>
 
           <section class="insight-card">
@@ -424,7 +417,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { GraphData } from '../types/symbolNetwork';
 import { demoGraphs, demoGraphMeta, demoKeys } from '../data/demoGraphs';
 import { computeBalanceStats } from '../utils/graphStats';
@@ -448,6 +441,10 @@ type BatchResult = {
   error?: string;
   startedAt: string;
   endedAt: string;
+};
+type ReplayEvent = PgsbcTimelineEvent & {
+  network_key?: string;
+  network_title?: string;
 };
 
 const dataSource = ref<DataSourceType>('demo');
@@ -562,30 +559,59 @@ const batchDoneCount = computed(() => batchResults.value.length);
 const batchSuccessCount = computed(() => batchResults.value.filter((x) => x.status === 'success').length);
 const batchFailCount = computed(() => batchResults.value.filter((x) => x.status === 'failed').length);
 const batchStoppedCount = computed(() => batchResults.value.filter((x) => x.status === 'stopped').length);
+const flowReplayEvents = ref<ReplayEvent[]>([]);
+const activeDemoKeyForView = computed(() => selectedDemoKey.value);
+const batchNetworkSwitchPauseMs = 320;
+const batchRoundPauseMs = 130;
 
 const replayCursor = ref(-1);
 const replayPlaying = ref(false);
 const replayIntervalMs = 850;
 let replayTimer: number | null = null;
 
-const replayHasEvents = computed(() => pgsbcTimeline.value.length > 0);
-const replayTotal = computed(() => pgsbcTimeline.value.length);
+const replaySourceEvents = computed<ReplayEvent[]>(() => {
+  if (flowReplayEvents.value.length > 0) return flowReplayEvents.value;
+  const fallbackKey = dataSource.value === 'demo' ? selectedDemoKey.value : undefined;
+  const fallbackTitle = fallbackKey ? demoGraphMeta[fallbackKey]?.title ?? fallbackKey : '自定义网络';
+  return pgsbcTimeline.value.map((event) => ({
+    ...event,
+    network_key: fallbackKey,
+    network_title: fallbackTitle,
+  }));
+});
+
+const replayHasEvents = computed(() => replaySourceEvents.value.length > 0);
+const replayTotal = computed(() => replaySourceEvents.value.length);
 const isReplayMode = computed(() => replayHasEvents.value && replayCursor.value >= 0);
-const replayCurrentEvent = computed<PgsbcTimelineEvent | null>(() => {
+const replayCurrentEvent = computed<ReplayEvent | null>(() => {
   if (!isReplayMode.value) return null;
-  return pgsbcTimeline.value[replayCursor.value] ?? null;
+  return replaySourceEvents.value[replayCursor.value] ?? null;
 });
 const replayProgressPct = computed(() => {
   if (!replayHasEvents.value || replayCursor.value < 0) return 0;
   return Math.round(((replayCursor.value + 1) / replayTotal.value) * 100);
 });
 
+const replayNetworkKey = computed(() => {
+  if (!isReplayMode.value) return '';
+  return replayCurrentEvent.value?.network_key ?? '';
+});
+
 const timelineForState = computed(() => {
   if (!isReplayMode.value) return pgsbcTimeline.value;
-  return pgsbcTimeline.value.slice(0, replayCursor.value + 1);
+  if (!flowReplayEvents.value.length) return replaySourceEvents.value.slice(0, replayCursor.value + 1);
+
+  const currentKey = replayCurrentEvent.value?.network_key;
+  if (!currentKey) return replaySourceEvents.value.slice(0, replayCursor.value + 1);
+  return replaySourceEvents.value.slice(0, replayCursor.value + 1).filter((event) => event.network_key === currentKey);
 });
 
 const taskGraph = computed<GraphData>(() => {
+  if (dataSource.value === 'demo') {
+    const key = replayNetworkKey.value || activeDemoKeyForView.value;
+    const demoGraph = demoGraphs[key];
+    if (demoGraph) return demoGraph;
+  }
   if (pgsbcHasTask.value) return boundTaskGraph.value ?? inputGraph.value;
   return inputGraph.value;
 });
@@ -617,7 +643,8 @@ const clusterCount = computed(() => {
 
 const taskGraphTitle = computed(() => {
   if (dataSource.value === 'custom') return '自定义网络';
-  return demoGraphMeta[selectedDemoKey.value]?.title ?? selectedDemoKey.value;
+  const key = replayNetworkKey.value || activeDemoKeyForView.value;
+  return demoGraphMeta[key]?.title ?? key;
 });
 
 const stats = computed(() => computeBalanceStats(taskGraph.value));
@@ -1001,7 +1028,14 @@ function exitStepReplay() {
 }
 
 function createPgsbcTask() {
+  if (dataSource.value === 'demo') {
+    if (batchRunning.value) stopDemoBatch();
+    else void startDemoBatch();
+    return;
+  }
+
   exitStepReplay();
+  flowReplayEvents.value = [];
   const graph = cloneGraph(inputGraph.value);
   if (graph.nodes.length < 2) {
     pgsbcError.value = '图至少需要 2 个节点';
@@ -1043,6 +1077,12 @@ function batchStatusText(status: BatchStatus): string {
   return '中断';
 }
 
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 async function runTaskUntilDone() {
   let guard = 0;
   let stagnantCount = 0;
@@ -1066,12 +1106,11 @@ async function runTaskUntilDone() {
     if (guard > guardLimit) {
       throw new Error(`迭代超过安全上限 ${guardLimit}`);
     }
-  }
-}
 
-function clearBatchResults() {
-  if (batchRunning.value) return;
-  batchResults.value = [];
+    if (batchRoundPauseMs > 0) {
+      await sleepMs(batchRoundPauseMs);
+    }
+  }
 }
 
 function stopDemoBatch() {
@@ -1094,6 +1133,7 @@ async function startDemoBatch() {
   batchStopRequested.value = false;
   batchCurrentKey.value = '';
   batchResults.value = [];
+  flowReplayEvents.value = [];
 
   try {
     for (const key of demoKeys) {
@@ -1102,7 +1142,6 @@ async function startDemoBatch() {
       const title = demoGraphMeta[key]?.title ?? key;
       const startedAt = new Date().toISOString();
       batchCurrentKey.value = key;
-      selectedDemoKey.value = key;
 
       let status: BatchStatus = 'success';
       let errorMsg = '';
@@ -1114,6 +1153,16 @@ async function startDemoBatch() {
         }
 
         boundTaskGraph.value = graph;
+        pgsbcTimeline.value = [];
+        await nextTick();
+        if (batchNetworkSwitchPauseMs > 0) {
+          await sleepMs(batchNetworkSwitchPauseMs);
+        }
+        if (batchStopRequested.value) {
+          status = 'stopped';
+          throw new Error('批处理已停止');
+        }
+
         await createTask(graph);
         if (pgsbcError.value) {
           throw new Error(pgsbcError.value);
@@ -1132,6 +1181,15 @@ async function startDemoBatch() {
       } catch (ex: any) {
         status = batchStopRequested.value ? 'stopped' : 'failed';
         errorMsg = ex?.message ?? '批处理失败';
+      }
+
+      const replayChunk = pgsbcTimeline.value.map((event) => ({
+        ...event,
+        network_key: key,
+        network_title: title,
+      }));
+      if (replayChunk.length) {
+        flowReplayEvents.value.push(...replayChunk);
       }
 
       const endedAt = new Date().toISOString();
@@ -1237,7 +1295,7 @@ function formatNumber(v: number | null | undefined): string {
 }
 
 watch(
-  () => pgsbcTimeline.value.length,
+  () => replaySourceEvents.value.length,
   (nextLength) => {
     if (nextLength <= 0) {
       exitStepReplay();
@@ -1249,9 +1307,23 @@ watch(
   }
 );
 
+watch(replayCurrentEvent, (event) => {
+  const key = event?.network_key;
+  if (!key) return;
+  if (dataSource.value !== 'demo') return;
+  if (selectedDemoKey.value === key) return;
+  selectedDemoKey.value = key;
+});
+
 watch(pgsbcHasTask, (hasTask) => {
   if (!hasTask) {
     exitStepReplay();
+  }
+});
+
+watch(dataSource, (source) => {
+  if (source !== 'demo') {
+    flowReplayEvents.value = [];
   }
 });
 
