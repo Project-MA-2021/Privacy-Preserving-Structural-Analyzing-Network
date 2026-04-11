@@ -17,6 +17,7 @@ export interface PgsbcTaskState {
   observed_h_history: number[];
   accepted_h_history: number[];
   c_history: number[];
+  round_count?: number;
 }
 
 export interface PgsbcTimelineEvent {
@@ -26,6 +27,38 @@ export interface PgsbcTimelineEvent {
   message: string;
   payload: Record<string, unknown>;
   ts: string;
+}
+
+export interface PgsbcExportRow {
+  round: number;
+  t_before_commit: number;
+  h_t: number;
+  c_t: number;
+  accepted_h: number;
+  candidate_h_real: number;
+  current_h_real: number | null;
+  real_unbalanced: number;
+  disturbed_unbalanced: number;
+  node_count: number;
+  real_edge_count: number;
+  anon_edge_count: number;
+  iter_ms: number;
+  ts: string;
+}
+
+export interface PgsbcExportPayload {
+  task_id: string;
+  summary: {
+    status: string;
+    t: number;
+    max_iter: number;
+    rb: number;
+    node_count: number;
+    real_edge_count: number;
+    anon_edge_count: number;
+    round_count: number;
+  };
+  rows: PgsbcExportRow[];
 }
 
 function getApiBaseUrl() {
@@ -94,6 +127,16 @@ export function usePgsbcTask() {
       `${apiBaseUrl}/tasks/${taskId.value}/timeline`
     );
     timeline.value = body.data.timeline ?? [];
+  }
+
+  async function fetchExportData(): Promise<PgsbcExportPayload> {
+    if (!taskId.value) {
+      throw new Error('尚未创建任务');
+    }
+    const body = await requestJson<{ ok: boolean; data: PgsbcExportPayload }>(
+      `${apiBaseUrl}/tasks/${taskId.value}/export`
+    );
+    return body.data;
   }
 
   async function createTask(graph: GraphData) {
@@ -205,8 +248,8 @@ export function usePgsbcTask() {
     resetTask,
     refreshState,
     refreshTimeline,
+    fetchExportData,
     startAutoplay,
     stopAutoplay,
   };
 }
-

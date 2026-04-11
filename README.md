@@ -12,13 +12,12 @@
 ### 1.1 可视化前端
 
 - 3D 符号网络展示（正边/负边）
-- 示例网络 + 自定义建图
-- 隐私模式（扰动）、结构对比（real/missing/spurious）、聚合展示
-- 失衡 Triad 浏览器
-- PGSBC 流程看板：Step1-Step8 轨道、角色泳道、状态变量卡片
-- Step 回放控制：播放/暂停/上一步/下一步/退出
-- `h_t` 趋势曲线（与实时状态/回放状态联动）
-- 参数说明弹窗（角落按钮触发）
+- 示例网络 + 自定义建图（用于提交后端任务）
+- 前端页面改为后端驱动：核心状态以后端 `task/state/timeline` 为准
+- PGSBC 流程看板：Step1-Step8 轨道、状态变量卡片、每步动画提示
+- `h_t` 趋势曲线与 `c_t` 决策展示（实时同步后端）
+- 迭代证据面板：最近轮次 + 最近 timeline 事件
+- 一键导出 JSON/CSV 实验数据
 
 ### 1.2 后端双服务器
 
@@ -111,6 +110,24 @@ python -m server1.app
 
 - `GET http://127.0.0.1:5001/api/v1/health`
 - `GET http://127.0.0.1:5002/api/v1/crypto/health`
+
+## 4.3 实验数据导出（新增）
+
+- 在前端 `PGSBC 任务（双服务器）` 区域创建任务并至少迭代 1 轮后，可点击：
+- `导出 JSON`：包含 `summary + rows` 的完整结构化实验记录。
+- `导出 CSV`：每轮指标平铺表格，便于论文作图和统计。
+
+每轮导出字段包括：
+
+- `round`、`h_t`、`c_t`、`accepted_h`
+- `candidate_h_real`、`current_h_real`
+- `real_unbalanced`、`disturbed_unbalanced`
+- `node_count`、`real_edge_count`、`anon_edge_count`
+- `iter_ms`、`ts`
+
+后端接口：
+
+- `GET /api/v1/tasks/<task_id>/export`
 
 ---
 

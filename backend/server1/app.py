@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
@@ -42,6 +43,7 @@ class TaskState:
     observed_h_history: List[float] = field(default_factory=list)
     accepted_h_history: List[float] = field(default_factory=list)
     c_history: List[int] = field(default_factory=list)
+    round_metrics: List[Dict[str, Any]] = field(default_factory=list)
     timeline: List[Dict[str, Any]] = field(default_factory=list)
     status: str = "ready"
 
@@ -351,6 +353,27 @@ def _to_state(task: TaskState) -> Dict[str, Any]:
         "observed_h_history": task.observed_h_history,
         "accepted_h_history": task.accepted_h_history,
         "c_history": task.c_history,
+        "round_count": len(task.round_metrics),
+    }
+
+
+def _to_export_payload(task: TaskState) -> Dict[str, Any]:
+    node_count = len(task.graph.get("nodes", []))
+    real_edge_count = len(task.graph.get("edges", []))
+    anon_edge_count = len(task.anonymized_graph.get("edges", [])) if task.anonymized_graph else 0
+    return {
+        "task_id": task.id,
+        "summary": {
+            "status": task.status,
+            "t": task.t,
+            "max_iter": task.max_iter,
+            "rb": task.rb,
+            "node_count": node_count,
+            "real_edge_count": real_edge_count,
+            "anon_edge_count": anon_edge_count,
+            "round_count": len(task.round_metrics),
+        },
+        "rows": task.round_metrics,
     }
 
 
@@ -404,6 +427,7 @@ def iterate_task(task_id: str):
         return err("TASK_DONE", "task already finished", 409)
 
     try:
+        iter_started = time.perf_counter()
         if not task.initialized:
             seed = (hash(task.id) & 0xFFFFFFFF) ^ 0x9E3779B9
             task.anonymized_graph = _generate_anonymized_graph(task.graph, task.rb, seed)
@@ -464,7 +488,27 @@ def iterate_task(task_id: str):
             task.last_accepted_h = h_t
             task.current_labels = candidate_labels
             task.current_h_real = float(cand_h_real)
-        task.accepted_h_history.append(task.last_accepted_h if task.last_accepted_h is not None else h_t)
+        accepted_h = task.last_accepted_h if task.last_accepted_h is not None else h_t
+        task.accepted_h_history.append(accepted_h)
+
+        task.round_metrics.append(
+            {
+                "round": task.t + 1,
+                "t_before_commit": task.t,
+                "h_t": float(h_t),
+                "c_t": int(c_t),
+                "accepted_h": float(accepted_h),
+                "candidate_h_real": float(cand_h_real),
+                "current_h_real": float(task.current_h_real) if task.current_h_real is not None else None,
+                "real_unbalanced": int(real_unbalanced_count),
+                "disturbed_unbalanced": int(disturbed_unbalanced_count),
+                "node_count": len(task.graph.get("nodes", [])),
+                "real_edge_count": len(task.graph.get("edges", [])),
+                "anon_edge_count": len(task.anonymized_graph.get("edges", [])) if task.anonymized_graph else 0,
+                "iter_ms": round((time.perf_counter() - iter_started) * 1000.0, 3),
+                "ts": _now_iso(),
+            }
+        )
 
         task.t += 1
         if task.t >= task.max_iter:
@@ -495,6 +539,14 @@ def get_timeline(task_id: str):
     return ok({"task_id": task.id, "timeline": task.timeline})
 
 
+@app.get("/api/v1/tasks/<task_id>/export")
+def get_export(task_id: str):
+    task = TASKS.get(task_id)
+    if task is None:
+        return err("TASK_NOT_FOUND", f"task '{task_id}' not found", 404)
+    return ok(_to_export_payload(task))
+
+
 @app.post("/api/v1/tasks/<task_id>/reset")
 def reset_task(task_id: str):
     task = TASKS.get(task_id)
@@ -508,6 +560,7 @@ def reset_task(task_id: str):
     task.observed_h_history = []
     task.accepted_h_history = []
     task.c_history = []
+    task.round_metrics = []
     task.timeline = []
     task.status = "ready"
     return ok({"task": _to_state(task)})
