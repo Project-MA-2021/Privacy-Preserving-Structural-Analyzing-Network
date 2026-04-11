@@ -442,6 +442,12 @@ type BatchResult = {
   startedAt: string;
   endedAt: string;
 };
+type DemoFinalClusterState = {
+  labels: Record<string, number>;
+  rounds: number;
+  acceptedH: number | null;
+  status: BatchStatus;
+};
 type ReplayEvent = PgsbcTimelineEvent & {
   network_key?: string;
   network_title?: string;
@@ -560,6 +566,7 @@ const batchSuccessCount = computed(() => batchResults.value.filter((x) => x.stat
 const batchFailCount = computed(() => batchResults.value.filter((x) => x.status === 'failed').length);
 const batchStoppedCount = computed(() => batchResults.value.filter((x) => x.status === 'stopped').length);
 const flowReplayEvents = ref<ReplayEvent[]>([]);
+const demoFinalStateByKey = ref<Record<string, DemoFinalClusterState>>({});
 const activeDemoKeyForView = computed(() => selectedDemoKey.value);
 const batchNetworkSwitchPauseMs = 320;
 const batchRoundPauseMs = 130;
@@ -680,6 +687,15 @@ function parseLabelMap(value: unknown): Record<string, number> | null {
 
 const clusterLabelsForView = computed<Record<string, number>>(() => {
   if (!isReplayMode.value) {
+    if (dataSource.value === 'demo') {
+      const key = activeDemoKeyForView.value;
+      const saved = demoFinalStateByKey.value[key]?.labels;
+      if (saved && Object.keys(saved).length > 0) return saved;
+      if (batchRunning.value && key === batchCurrentKey.value) {
+        return pgsbcTaskState.value?.current_labels ?? {};
+      }
+      return {};
+    }
     return pgsbcTaskState.value?.current_labels ?? {};
   }
 
@@ -1134,6 +1150,7 @@ async function startDemoBatch() {
   batchCurrentKey.value = '';
   batchResults.value = [];
   flowReplayEvents.value = [];
+  demoFinalStateByKey.value = {};
 
   try {
     for (const key of demoKeys) {
@@ -1193,6 +1210,17 @@ async function startDemoBatch() {
       }
 
       const endedAt = new Date().toISOString();
+      const finalLabels = { ...(pgsbcTaskState.value?.current_labels ?? {}) };
+      demoFinalStateByKey.value = {
+        ...demoFinalStateByKey.value,
+        [key]: {
+          labels: finalLabels,
+          rounds: pgsbcRoundCount.value,
+          acceptedH: getAcceptedHSnapshot(),
+          status,
+        },
+      };
+
       batchResults.value.push({
         key,
         title,

@@ -68,7 +68,7 @@ function computeClusteredLayout(
   }
 
   const clusterKeys = Array.from(grouped.keys());
-  const clusterCenters = fibonacciPoints(clusterKeys.length, radius * 0.62);
+  const clusterCenters = fibonacciPoints(clusterKeys.length, radius * 1.05);
 
   clusterKeys.forEach((key, i) => {
     const center = clusterCenters[i] ?? [0, 0, 0];
@@ -76,7 +76,7 @@ function computeClusteredLayout(
     const localRadius =
       members.length <= 1
         ? 0
-        : Math.min(radius * 0.22, radius * (0.06 + Math.sqrt(members.length) * 0.035));
+        : Math.min(radius * 0.38, radius * (0.1 + Math.sqrt(members.length) * 0.05));
     const localOffsets = fibonacciPoints(Math.max(1, members.length), localRadius);
 
     members.forEach((nodeId, j) => {
@@ -152,13 +152,13 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     layoutMode === 'clustered' && Object.keys(clusters).length > 0
       ? computeClusteredLayout(graph.nodes, clusters, radius)
       : computeSphereLayout(graph.nodes, radius);
-  const verticalScale = 0.82;
+  const verticalScale = layoutMode === 'clustered' ? 0.95 : 0.82;
   const coords: Record<string, Coord3D> = {};
   for (const [nodeId, coord] of Object.entries(baseCoords)) {
     coords[nodeId] = [coord[0], coord[1] * verticalScale, coord[2]];
   }
-  const axisExtent = radius * 1.75;
-  const axisExtentY = radius * 2.25;
+  const axisExtent = layoutMode === 'clustered' ? radius * 2.05 : radius * 1.75;
+  const axisExtentY = layoutMode === 'clustered' ? radius * 2.45 : radius * 2.25;
 
   let cx = 0;
   let cy = 0;
@@ -189,7 +189,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
       clusterIndex: cIndex,
 
       // per-node 大小
-      symbolSize: hi ? 11 : 7,
+      symbolSize: hi ? (layoutMode === 'clustered' ? 12 : 11) : layoutMode === 'clustered' ? 8 : 7,
 
       itemStyle: {
         color: baseColor,
@@ -277,14 +277,14 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     },
 
     grid3D: {
-      boxWidth: 165,
-      boxHeight: 165,
-      boxDepth: 165,
+      boxWidth: layoutMode === 'clustered' ? 175 : 165,
+      boxHeight: layoutMode === 'clustered' ? 175 : 165,
+      boxDepth: layoutMode === 'clustered' ? 175 : 165,
       viewControl: {
         autoRotate: true,
         autoRotateSpeed: 5,
         projection: 'perspective',
-        distance: 188,
+        distance: layoutMode === 'clustered' ? 178 : 188,
         minDistance: 108,
         maxDistance: 420,
         targetCoord,
@@ -298,7 +298,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
         type: 'scatter3D',
         coordinateSystem: 'cartesian3D',
         // 这里保持一个默认值，单点可被 data[i].symbolSize 覆盖
-        symbolSize: 7,
+        symbolSize: layoutMode === 'clustered' ? 8 : 7,
         data: nodeData,
         label: {
           show: true,
