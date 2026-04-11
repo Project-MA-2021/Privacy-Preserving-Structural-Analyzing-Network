@@ -162,9 +162,39 @@
           <span class="pill">{{ taskGraphTitle }}</span>
           <span class="pill" v-if="pgsbcTaskState">状态 {{ pgsbcTaskState.status }}</span>
           <span class="pill" v-if="pgsbcTaskState">当前步骤 {{ activeStepText }}</span>
+          <span class="pill replay-pill" v-if="isReplayMode">Step 回放中</span>
           <span class="pill decision-pill" v-if="lastDecision !== null">
             c_t = {{ lastDecision === 1 ? 'accept' : 'reject' }}
           </span>
+        </div>
+
+        <div class="replay-control">
+          <div class="replay-actions">
+            <button class="btn btn-small" type="button" :disabled="!replayHasEvents || replayPlaying" @click="startStepReplay">
+              播放回放
+            </button>
+            <button class="btn btn-small" type="button" :disabled="!replayPlaying" @click="pauseStepReplay">暂停</button>
+            <button class="btn btn-small" type="button" :disabled="!replayHasEvents" @click="replayPrevEvent">上一步</button>
+            <button class="btn btn-small" type="button" :disabled="!replayHasEvents" @click="replayNextEvent">下一步</button>
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="(!isReplayMode && !replayPlaying) || !replayHasEvents"
+              @click="exitStepReplay"
+            >
+              退出回放
+            </button>
+          </div>
+          <div class="replay-meta" v-if="replayCurrentEvent">
+            回放 {{ replayCursor + 1 }}/{{ replayTotal }} · t={{ replayCurrentEvent.t }} · S{{ replayCurrentEvent.step }} ·
+            {{ replayCurrentEvent.actor }}
+          </div>
+          <div class="replay-meta" v-else-if="replayHasEvents">未进入回放，当前显示实时最新状态</div>
+          <div class="replay-meta" v-else>暂无可回放事件（先执行至少一轮迭代）</div>
+        </div>
+
+        <div class="replay-progress">
+          <span class="replay-progress-bar" :style="{ width: `${replayProgressPct}%` }"></span>
         </div>
 
         <div class="step-track">
@@ -188,6 +218,7 @@
           <div class="graph-overlay">
             <span class="overlay-badge">渲染图：{{ taskGraphTitle }}</span>
             <span class="overlay-badge">聚类来源：{{ pgsbcTaskState ? '后端 current_labels' : '无' }}</span>
+            <span class="overlay-badge">模式：{{ isReplayMode ? '回放视角' : '实时视角' }}</span>
             <span class="overlay-badge">步骤动画：{{ activeStepText }}</span>
           </div>
         </div>
@@ -248,7 +279,7 @@
           </section>
 
           <section class="insight-card">
-            <div class="insight-title">最近轮次</div>
+            <div class="insight-title">轮次证据（{{ isReplayMode ? '回放' : '实时' }}）</div>
             <div class="round-table-wrap" v-if="recentRounds.length">
               <table class="round-table">
                 <thead>
@@ -273,7 +304,7 @@
           </section>
 
           <section class="insight-card">
-            <div class="insight-title">最近事件（后端 timeline）</div>
+            <div class="insight-title">事件流（后端 timeline）</div>
             <div class="event-list" v-if="recentTimelineEvents.length">
               <div class="event-item" v-for="(event, idx) in recentTimelineEvents" :key="`${event.ts}-${idx}`">
                 <div class="event-main">
@@ -293,7 +324,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { GraphData } from '../types/symbolNetwork';
 import { demoGraphs, demoGraphMeta, demoKeys } from '../data/demoGraphs';
 import { computeBalanceStats } from '../utils/graphStats';
@@ -412,6 +443,28 @@ const pgsbcTaskState = computed(() => pgsbcTask.value);
 const pgsbcRoundCount = computed(() => pgsbcTaskState.value?.round_count ?? pgsbcTaskState.value?.t ?? 0);
 const exportLoading = ref(false);
 
+const replayCursor = ref(-1);
+const replayPlaying = ref(false);
+const replayIntervalMs = 850;
+let replayTimer: number | null = null;
+
+const replayHasEvents = computed(() => pgsbcTimeline.value.length > 0);
+const replayTotal = computed(() => pgsbcTimeline.value.length);
+const isReplayMode = computed(() => replayHasEvents.value && replayCursor.value >= 0);
+const replayCurrentEvent = computed<PgsbcTimelineEvent | null>(() => {
+  if (!isReplayMode.value) return null;
+  return pgsbcTimeline.value[replayCursor.value] ?? null;
+});
+const replayProgressPct = computed(() => {
+  if (!replayHasEvents.value || replayCursor.value < 0) return 0;
+  return Math.round(((replayCursor.value + 1) / replayTotal.value) * 100);
+});
+
+const timelineForState = computed(() => {
+  if (!isReplayMode.value) return pgsbcTimeline.value;
+  return pgsbcTimeline.value.slice(0, replayCursor.value + 1);
+});
+
 const taskGraph = computed<GraphData>(() => {
   if (pgsbcHasTask.value) return boundTaskGraph.value ?? inputGraph.value;
   return inputGraph.value;
@@ -442,9 +495,61 @@ function parseNumber(value: unknown): number | null {
   return null;
 }
 
-const observedHHistory = computed<number[]>(() => pgsbcTaskState.value?.observed_h_history ?? []);
-const cHistory = computed<number[]>(() => pgsbcTaskState.value?.c_history ?? []);
-const acceptedHHistory = computed<number[]>(() => pgsbcTaskState.value?.accepted_h_history ?? []);
+function buildReplayHistories(events: PgsbcTimelineEvent[]) {
+  const observed: number[] = [];
+  const decisions: number[] = [];
+  const accepted: number[] = [];
+
+  let pendingH: number | null = null;
+  let lastAccepted: number | null = null;
+
+  for (const event of events) {
+    if (event.step === 6) {
+      const h = parseNumber((event.payload as Record<string, unknown>).h_t);
+      if (h !== null) pendingH = h;
+      continue;
+    }
+
+    if (event.step === 7) {
+      const cRaw = parseNumber((event.payload as Record<string, unknown>).c_t);
+      const c = cRaw !== null && cRaw >= 0.5 ? 1 : 0;
+      if (pendingH === null) continue;
+
+      observed.push(pendingH);
+      decisions.push(c);
+      if (c === 1 || lastAccepted === null) {
+        lastAccepted = pendingH;
+      }
+      accepted.push(lastAccepted);
+      pendingH = null;
+    }
+  }
+
+  if (pendingH !== null) {
+    observed.push(pendingH);
+    decisions.push(-1);
+    accepted.push(lastAccepted ?? pendingH);
+  }
+
+  return { observed, decisions, accepted };
+}
+
+const replayHistories = computed(() => buildReplayHistories(timelineForState.value));
+
+const observedHHistory = computed<number[]>(() => {
+  if (!isReplayMode.value) return pgsbcTaskState.value?.observed_h_history ?? [];
+  return replayHistories.value.observed;
+});
+
+const cHistory = computed<number[]>(() => {
+  if (!isReplayMode.value) return pgsbcTaskState.value?.c_history ?? [];
+  return replayHistories.value.decisions;
+});
+
+const acceptedHHistory = computed<number[]>(() => {
+  if (!isReplayMode.value) return pgsbcTaskState.value?.accepted_h_history ?? [];
+  return replayHistories.value.accepted;
+});
 
 const lastObservedH = computed<number | null>(() => {
   const list = observedHHistory.value;
@@ -453,12 +558,14 @@ const lastObservedH = computed<number | null>(() => {
 
 const lastDecision = computed<number | null>(() => {
   const list = cHistory.value;
-  return list.length ? list[list.length - 1] ?? null : null;
+  const last = list.length ? list[list.length - 1] : null;
+  if (last === 0 || last === 1) return last;
+  return null;
 });
 
 function getLatestStepEvent(step: number): PgsbcTimelineEvent | null {
-  for (let i = pgsbcTimeline.value.length - 1; i >= 0; i -= 1) {
-    const event = pgsbcTimeline.value[i];
+  for (let i = timelineForState.value.length - 1; i >= 0; i -= 1) {
+    const event = timelineForState.value[i];
     if (!event) continue;
     if (event.step === step) return event;
   }
@@ -479,8 +586,8 @@ const STEP_DEFS = [
 ] as const;
 
 const latestStep = computed(() => {
-  if (!pgsbcTimeline.value.length) return 0;
-  return pgsbcTimeline.value[pgsbcTimeline.value.length - 1]?.step ?? 0;
+  if (!timelineForState.value.length) return 0;
+  return timelineForState.value[timelineForState.value.length - 1]?.step ?? 0;
 });
 
 const activeStep = computed(() => {
@@ -586,14 +693,14 @@ const recentRounds = computed(() => {
   const rows = h.map((value, idx) => ({
     round: idx + 1,
     h: value,
-    c: c[idx] ?? 0,
+    c: c[idx] === 0 || c[idx] === 1 ? String(c[idx]) : '-',
     accepted: accepted[idx] ?? value,
   }));
   return rows.slice(-8).reverse();
 });
 
 const recentTimelineEvents = computed(() => {
-  return pgsbcTimeline.value.slice(-12).reverse();
+  return timelineForState.value.slice(-12).reverse();
 });
 
 const animationClass = computed(() => {
@@ -607,7 +714,65 @@ const decisionClass = computed(() => {
   return '';
 });
 
+function stopReplayTimer() {
+  if (replayTimer !== null) {
+    window.clearInterval(replayTimer);
+    replayTimer = null;
+  }
+}
+
+function pauseStepReplay() {
+  replayPlaying.value = false;
+  stopReplayTimer();
+}
+
+function replayStepForward(): boolean {
+  if (!replayHasEvents.value) return false;
+  if (replayCursor.value < 0) {
+    replayCursor.value = 0;
+    return true;
+  }
+  if (replayCursor.value >= replayTotal.value - 1) return false;
+  replayCursor.value += 1;
+  return true;
+}
+
+function startStepReplay() {
+  if (!replayHasEvents.value) return;
+  if (replayCursor.value < 0) replayCursor.value = 0;
+  if (replayPlaying.value) return;
+
+  replayPlaying.value = true;
+  stopReplayTimer();
+  replayTimer = window.setInterval(() => {
+    const advanced = replayStepForward();
+    if (!advanced) pauseStepReplay();
+  }, replayIntervalMs);
+}
+
+function replayNextEvent() {
+  pauseStepReplay();
+  if (!replayHasEvents.value) return;
+  void replayStepForward();
+}
+
+function replayPrevEvent() {
+  pauseStepReplay();
+  if (!replayHasEvents.value) return;
+  if (replayCursor.value <= 0) {
+    replayCursor.value = 0;
+    return;
+  }
+  replayCursor.value -= 1;
+}
+
+function exitStepReplay() {
+  pauseStepReplay();
+  replayCursor.value = -1;
+}
+
 function createPgsbcTask() {
+  exitStepReplay();
   const graph = cloneGraph(inputGraph.value);
   if (graph.nodes.length < 2) {
     pgsbcError.value = '图至少需要 2 个节点';
@@ -618,10 +783,12 @@ function createPgsbcTask() {
 }
 
 function iteratePgsbcTask() {
+  exitStepReplay();
   void iterateOnce();
 }
 
 function resetPgsbcTask() {
+  exitStepReplay();
   void resetTask();
 }
 
@@ -630,6 +797,7 @@ function refreshPgsbcTask() {
 }
 
 function togglePgsbcAutoplay() {
+  exitStepReplay();
   if (pgsbcAutoplayOn.value) stopPgsbcAutoplay();
   else startPgsbcAutoplay(1500);
 }
@@ -715,6 +883,25 @@ function formatNumber(v: number | null | undefined): string {
   return Number(v).toFixed(2);
 }
 
+watch(
+  () => pgsbcTimeline.value.length,
+  (nextLength) => {
+    if (nextLength <= 0) {
+      exitStepReplay();
+      return;
+    }
+    if (replayCursor.value >= nextLength) {
+      replayCursor.value = nextLength - 1;
+    }
+  }
+);
+
+watch(pgsbcHasTask, (hasTask) => {
+  if (!hasTask) {
+    exitStepReplay();
+  }
+});
+
 const chartDom = ref<HTMLDivElement | null>(null);
 const displayMode = computed(() => 'normal' as const);
 const drawEdges = computed(() => true);
@@ -727,6 +914,7 @@ useSphereChart({
 });
 
 onBeforeUnmount(() => {
+  stopReplayTimer();
   stopPgsbcAutoplay();
 });
 </script>
