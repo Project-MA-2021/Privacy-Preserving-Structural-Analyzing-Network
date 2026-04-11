@@ -94,6 +94,12 @@
   background: rgba(56, 189, 248, 0.16);
 }
 
+.net-item.running {
+  border-color: rgba(52, 211, 153, 0.76);
+  background: rgba(52, 211, 153, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.18);
+}
+
 .net-title {
   font-size: 13px;
   font-weight: 700;
@@ -178,6 +184,13 @@
 
 .task-actions {
   margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-actions {
+  margin-top: 9px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -335,12 +348,22 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 12px;
+  gap: 10px;
+}
+
+.graph-column {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 6px;
 }
 
 .graph-stage {
   min-width: 0;
   min-height: 0;
+  height: clamp(260px, 44vh, 420px);
   border-radius: 14px;
   border: 1px solid var(--card-border);
   overflow: hidden;
@@ -348,9 +371,27 @@
   background: rgba(4, 10, 20, 0.8);
 }
 
+.cluster-stage {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
 .chart-root {
   width: 100%;
   height: 100%;
+}
+
+.chart-empty-tip {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  max-width: 320px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(120, 53, 15, 0.3);
+  color: #fde68a;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .graph-overlay {
@@ -402,6 +443,33 @@
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.45;
+}
+
+.kv-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.kv-item {
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(12, 23, 42, 0.56);
+  padding: 6px 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.kv-k {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.kv-v {
+  color: #eaf4ff;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .metric-grid {
@@ -614,7 +682,12 @@
 
   .workspace-grid {
     grid-template-columns: 1fr;
-    grid-template-rows: 56vh auto;
+    grid-template-rows: auto auto;
+  }
+
+  .graph-column {
+    grid-template-columns: 1fr;
+    grid-template-rows: 30vh 30vh;
   }
 
   .evidence-panel {
@@ -638,5 +711,10 @@
 
   .evidence-panel {
     grid-template-columns: 1fr;
+  }
+
+  .graph-column {
+    grid-template-columns: 1fr;
+    grid-template-rows: 24vh 24vh;
   }
 }

@@ -450,7 +450,10 @@ def iterate_task(task_id: str):
             2,
             "Server1",
             "generated a candidate clustering S_t",
-            {"candidate_h_real": cand_h_real},
+            {
+                "candidate_h_real": cand_h_real,
+                "candidate_labels": candidate_labels,
+            },
         )
 
         real_h_map, disturbed_h_map, real_unbalanced_count = _disturb_balance_states(task, candidate_labels)
@@ -480,7 +483,6 @@ def iterate_task(task_id: str):
         _log(task, 6, "Server2", "decrypted global score h_t", {"h_t": h_t})
 
         c_t = _compare_on_server2(task.last_accepted_h, h_t)
-        _log(task, 7, "Server2", "returned update decision c_t", {"c_t": c_t})
 
         task.observed_h_history.append(h_t)
         task.c_history.append(c_t)
@@ -490,6 +492,17 @@ def iterate_task(task_id: str):
             task.current_h_real = float(cand_h_real)
         accepted_h = task.last_accepted_h if task.last_accepted_h is not None else h_t
         task.accepted_h_history.append(accepted_h)
+        _log(
+            task,
+            7,
+            "Server2",
+            "returned update decision c_t",
+            {
+                "c_t": c_t,
+                "accepted_h": accepted_h,
+                "accepted_labels": task.current_labels,
+            },
+        )
 
         task.round_metrics.append(
             {

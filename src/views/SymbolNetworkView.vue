@@ -9,11 +9,11 @@
           <label class="section-label">数据来源</label>
           <div class="radio-group">
             <label>
-              <input type="radio" value="demo" v-model="dataSource" :disabled="pgsbcLoading" />
+              <input type="radio" value="demo" v-model="dataSource" :disabled="pgsbcLoading || batchRunning" />
               示例网络
             </label>
             <label>
-              <input type="radio" value="custom" v-model="dataSource" :disabled="pgsbcLoading" />
+              <input type="radio" value="custom" v-model="dataSource" :disabled="pgsbcLoading || batchRunning" />
               自定义网络
             </label>
           </div>
@@ -28,8 +28,9 @@
               :key="k"
               type="button"
               class="net-item"
-              :class="{ active: selectedDemoKey === k }"
+              :class="{ active: selectedDemoKey === k, running: batchRunning && batchCurrentKey === k }"
               @click="selectDemo(k)"
+              :disabled="batchRunning"
             >
               <div class="net-title">{{ demoGraphMeta[k]?.title ?? k }}</div>
               <div class="net-meta">
@@ -37,6 +38,22 @@
               </div>
             </button>
           </div>
+
+          <div class="batch-actions">
+            <button class="btn btn-small" type="button" :disabled="batchRunning || pgsbcLoading" @click="startDemoBatch">
+              全部示例批处理
+            </button>
+            <button class="btn btn-small" type="button" :disabled="!batchRunning" @click="stopDemoBatch">停止批处理</button>
+            <button class="btn btn-small" type="button" :disabled="batchRunning || !batchResults.length" @click="clearBatchResults">
+              清空记录
+            </button>
+          </div>
+          <p class="hint" v-if="batchRunning">
+            正在处理：{{ demoGraphMeta[batchCurrentKey]?.title ?? batchCurrentKey }}（{{ batchDoneCount }}/{{ demoKeys.length }}）
+          </p>
+          <p class="hint" v-else-if="batchResults.length">
+            批处理完成：成功 {{ batchSuccessCount }} / 失败 {{ batchFailCount }} / 中断 {{ batchStoppedCount }}
+          </p>
         </section>
 
         <section v-else class="sidebar-section">
@@ -98,13 +115,13 @@
           </div>
 
           <div class="task-actions">
-            <button class="btn btn-small" type="button" :disabled="pgsbcLoading" @click="createPgsbcTask">
+            <button class="btn btn-small" type="button" :disabled="pgsbcLoading || batchRunning" @click="createPgsbcTask">
               {{ pgsbcHasTask ? '重建任务' : '创建任务' }}
             </button>
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone"
+              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
               @click="iteratePgsbcTask"
             >
               下一轮
@@ -112,18 +129,23 @@
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone"
+              :disabled="!pgsbcHasTask || pgsbcLoading || pgsbcIsDone || batchRunning"
               @click="togglePgsbcAutoplay"
             >
               {{ pgsbcAutoplayOn ? '停止自动' : '自动运行' }}
             </button>
-            <button class="btn btn-small" type="button" :disabled="!pgsbcHasTask || pgsbcLoading" @click="resetPgsbcTask">
+            <button
+              class="btn btn-small"
+              type="button"
+              :disabled="!pgsbcHasTask || pgsbcLoading || batchRunning"
+              @click="resetPgsbcTask"
+            >
               重置
             </button>
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading"
+              :disabled="!pgsbcHasTask || pgsbcLoading || batchRunning"
               @click="refreshPgsbcTask"
             >
               刷新
@@ -131,7 +153,7 @@
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || exportLoading"
+              :disabled="!pgsbcHasTask || pgsbcLoading || exportLoading || batchRunning"
               @click="exportPgsbcResult('json')"
             >
               {{ exportLoading ? '导出中...' : '导出 JSON' }}
@@ -139,7 +161,7 @@
             <button
               class="btn btn-small"
               type="button"
-              :disabled="!pgsbcHasTask || pgsbcLoading || exportLoading"
+              :disabled="!pgsbcHasTask || pgsbcLoading || exportLoading || batchRunning"
               @click="exportPgsbcResult('csv')"
             >
               {{ exportLoading ? '导出中...' : '导出 CSV' }}
@@ -213,13 +235,24 @@
       </section>
 
       <section class="workspace-grid">
-        <div class="graph-stage">
-          <div ref="chartDom" class="chart-root"></div>
-          <div class="graph-overlay">
-            <span class="overlay-badge">渲染图：{{ taskGraphTitle }}</span>
-            <span class="overlay-badge">聚类来源：{{ pgsbcTaskState ? '后端 current_labels' : '无' }}</span>
-            <span class="overlay-badge">模式：{{ isReplayMode ? '回放视角' : '实时视角' }}</span>
-            <span class="overlay-badge">步骤动画：{{ activeStepText }}</span>
+        <div class="graph-column">
+          <div class="graph-stage">
+            <div ref="chartDomRaw" class="chart-root"></div>
+            <div class="graph-overlay">
+              <span class="overlay-badge">视图 A：当前网络（结构/符号）</span>
+              <span class="overlay-badge">{{ taskGraphTitle }}</span>
+              <span class="overlay-badge">模式：{{ isReplayMode ? '回放视角' : '实时视角' }}</span>
+            </div>
+          </div>
+
+          <div class="graph-stage cluster-stage">
+            <div ref="chartDomCluster" class="chart-root"></div>
+            <div class="graph-overlay">
+              <span class="overlay-badge">视图 B：聚类状态 S_t</span>
+              <span class="overlay-badge">簇数：{{ clusterCount }}</span>
+              <span class="overlay-badge">更新规则：c_t=1 接受 / c_t=0 回退</span>
+            </div>
+            <div class="chart-empty-tip" v-if="!hasClusterLabels">尚无已接受聚类，执行至少一轮迭代后显示。</div>
           </div>
         </div>
 
@@ -279,6 +312,48 @@
           </section>
 
           <section class="insight-card">
+            <div class="insight-title">论文流程证据（Step3-Step7）</div>
+            <div class="kv-list">
+              <div class="kv-item">
+                <span class="kv-k">H_t（真实）</span>
+                <span class="kv-v">{{ formatNumber(latestRealUnbalanced) }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">Ĥ_t（扰动）</span>
+                <span class="kv-v">{{ formatNumber(latestDisturbedUnbalanced) }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">A^m 边数</span>
+                <span class="kv-v">{{ pgsbcTaskState?.anon_edge_count ?? '-' }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">h_t（全局目标）</span>
+                <span class="kv-v">{{ formatNumber(lastObservedH) }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">c_t（更新标签）</span>
+                <span class="kv-v">{{ lastDecision === null ? '-' : lastDecision }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">Step6 payload.h_t</span>
+                <span class="kv-v">{{ formatNumber(latestStep6H) }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">Step7 payload.c_t</span>
+                <span class="kv-v">{{ formatNumber(latestStep7C) }}</span>
+              </div>
+              <div class="kv-item">
+                <span class="kv-k">accepted_h</span>
+                <span class="kv-v">{{ formatNumber(lastAcceptedH) }}</span>
+              </div>
+            </div>
+            <p class="insight-text">
+              语义对应：S2 产生候选 S_t；S3 在当前 S_t 上评估 H_t 并扰动为 Ĥ_t；S4-S6 得到 h_t；S7 根据 c_t
+              决定是否接受该轮聚类。
+            </p>
+          </section>
+
+          <section class="insight-card">
             <div class="insight-title">轮次证据（{{ isReplayMode ? '回放' : '实时' }}）</div>
             <div class="round-table-wrap" v-if="recentRounds.length">
               <table class="round-table">
@@ -301,6 +376,31 @@
               </table>
             </div>
             <p class="insight-text" v-else>暂无轮次数据。</p>
+          </section>
+
+          <section class="insight-card">
+            <div class="insight-title">网络集批处理结果</div>
+            <div class="round-table-wrap" v-if="batchResults.length">
+              <table class="round-table">
+                <thead>
+                  <tr>
+                    <th>network</th>
+                    <th>status</th>
+                    <th>rounds</th>
+                    <th>accepted_h</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in batchResults" :key="`b-${row.key}-${row.startedAt}`">
+                    <td>{{ row.title }}</td>
+                    <td>{{ batchStatusText(row.status) }}</td>
+                    <td>{{ row.rounds }}</td>
+                    <td>{{ formatNumber(row.acceptedH) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="insight-text" v-else>尚未执行网络集批处理。</p>
           </section>
 
           <section class="insight-card">
@@ -337,6 +437,17 @@ type ParamChip = {
   key: string;
   value: string;
   desc: string;
+};
+type BatchStatus = 'success' | 'failed' | 'stopped';
+type BatchResult = {
+  key: string;
+  title: string;
+  status: BatchStatus;
+  rounds: number;
+  acceptedH: number | null;
+  error?: string;
+  startedAt: string;
+  endedAt: string;
 };
 
 const dataSource = ref<DataSourceType>('demo');
@@ -442,6 +553,15 @@ const {
 const pgsbcTaskState = computed(() => pgsbcTask.value);
 const pgsbcRoundCount = computed(() => pgsbcTaskState.value?.round_count ?? pgsbcTaskState.value?.t ?? 0);
 const exportLoading = ref(false);
+const batchRunning = ref(false);
+const batchStopRequested = ref(false);
+const batchCurrentKey = ref('');
+const batchResults = ref<BatchResult[]>([]);
+
+const batchDoneCount = computed(() => batchResults.value.length);
+const batchSuccessCount = computed(() => batchResults.value.filter((x) => x.status === 'success').length);
+const batchFailCount = computed(() => batchResults.value.filter((x) => x.status === 'failed').length);
+const batchStoppedCount = computed(() => batchResults.value.filter((x) => x.status === 'stopped').length);
 
 const replayCursor = ref(-1);
 const replayPlaying = ref(false);
@@ -470,13 +590,29 @@ const taskGraph = computed<GraphData>(() => {
   return inputGraph.value;
 });
 
-const graphForRender = computed<GraphData>(() => {
+const rawGraphForRender = computed<GraphData>(() => {
+  return cloneGraph(taskGraph.value);
+});
+
+const clusteredGraphForRender = computed<GraphData>(() => {
   const base = cloneGraph(taskGraph.value);
-  const labels = pgsbcTaskState.value?.current_labels ?? {};
+  const labels = clusterLabelsForView.value;
   if (Object.keys(labels).length > 0) {
     base.clusters = { ...labels };
   }
   return base;
+});
+
+const hasClusterLabels = computed(() => {
+  const labels = clusterLabelsForView.value;
+  return Object.keys(labels).length > 0;
+});
+
+const clusterCount = computed(() => {
+  const labels = clusterLabelsForView.value;
+  const values = Object.values(labels);
+  if (!values.length) return 0;
+  return new Set(values).size;
 });
 
 const taskGraphTitle = computed(() => {
@@ -494,6 +630,74 @@ function parseNumber(value: unknown): number | null {
   }
   return null;
 }
+
+function buildInitialLabels(graph: GraphData): Record<string, number> {
+  const labels: Record<string, number> = {};
+  (graph.nodes ?? []).forEach((node, idx) => {
+    labels[String(node.id)] = idx;
+  });
+  return labels;
+}
+
+function parseLabelMap(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(input)) {
+    const n = parseNumber(v);
+    if (n === null) return null;
+    out[String(k)] = Math.trunc(n);
+  }
+  return out;
+}
+
+const clusterLabelsForView = computed<Record<string, number>>(() => {
+  if (!isReplayMode.value) {
+    return pgsbcTaskState.value?.current_labels ?? {};
+  }
+
+  let accepted = buildInitialLabels(taskGraph.value);
+  let candidate: Record<string, number> | null = null;
+  let display = { ...accepted };
+
+  for (const event of timelineForState.value) {
+    if (event.step === 2) {
+      const labels = parseLabelMap((event.payload as Record<string, unknown>).candidate_labels);
+      if (labels && Object.keys(labels).length > 0) {
+        candidate = labels;
+        display = { ...labels };
+      }
+      continue;
+    }
+
+    if (event.step >= 3 && event.step <= 6) {
+      if (candidate) display = { ...candidate };
+      continue;
+    }
+
+    if (event.step === 7) {
+      const cRaw = parseNumber((event.payload as Record<string, unknown>).c_t);
+      const c = cRaw !== null && cRaw >= 0.5 ? 1 : 0;
+      if (c === 1 && candidate) {
+        accepted = { ...candidate };
+      } else {
+        const acceptedFromPayload = parseLabelMap((event.payload as Record<string, unknown>).accepted_labels);
+        if (acceptedFromPayload && Object.keys(acceptedFromPayload).length > 0) {
+          accepted = acceptedFromPayload;
+        }
+      }
+      display = { ...accepted };
+      candidate = null;
+      continue;
+    }
+
+    if (event.step === 8) {
+      display = { ...accepted };
+    }
+  }
+
+  return display;
+});
 
 function buildReplayHistories(events: PgsbcTimelineEvent[]) {
   const observed: number[] = [];
@@ -555,6 +759,10 @@ const lastObservedH = computed<number | null>(() => {
   const list = observedHHistory.value;
   return list.length ? list[list.length - 1] ?? null : null;
 });
+const lastAcceptedH = computed<number | null>(() => {
+  const list = acceptedHHistory.value;
+  return list.length ? list[list.length - 1] ?? null : null;
+});
 
 const lastDecision = computed<number | null>(() => {
   const list = cHistory.value;
@@ -573,6 +781,16 @@ function getLatestStepEvent(step: number): PgsbcTimelineEvent | null {
 }
 
 const latestStep3Payload = computed(() => getLatestStepEvent(3)?.payload ?? {});
+const latestStep6Payload = computed(() => getLatestStepEvent(6)?.payload ?? {});
+const latestStep7Payload = computed(() => getLatestStepEvent(7)?.payload ?? {});
+const latestRealUnbalanced = computed(() =>
+  parseNumber((latestStep3Payload.value as Record<string, unknown>).real_unbalanced)
+);
+const latestDisturbedUnbalanced = computed(() =>
+  parseNumber((latestStep3Payload.value as Record<string, unknown>).disturbed_unbalanced)
+);
+const latestStep6H = computed(() => parseNumber((latestStep6Payload.value as Record<string, unknown>).h_t));
+const latestStep7C = computed(() => parseNumber((latestStep7Payload.value as Record<string, unknown>).c_t));
 
 const STEP_DEFS = [
   { id: 1, label: 'Init / R()' },
@@ -591,13 +809,17 @@ const latestStep = computed(() => {
 });
 
 const activeStep = computed(() => {
-  if (!pgsbcHasTask.value) return 0;
+  if (!pgsbcHasTask.value || !isReplayMode.value) return 0;
   return Math.max(1, latestStep.value);
 });
 
 const activeStepText = computed(() => {
+  if (!pgsbcHasTask.value) return '未开始';
+  if (!isReplayMode.value) {
+    return pgsbcIsDone.value ? '实时运行已完成（步骤联动在回放）' : '实时运行中（步骤联动在回放）';
+  }
   const step = STEP_DEFS.find((x) => x.id === activeStep.value);
-  if (!step) return '未开始';
+  if (!step) return '回放未定位';
   return `S${step.id} ${step.label}`;
 });
 
@@ -605,9 +827,15 @@ const stepTrack = computed(() => {
   return STEP_DEFS.map((step) => {
     let status: StepStatus = 'pending';
     if (pgsbcHasTask.value) {
-      if (pgsbcIsDone.value) status = 'completed';
-      else if (step.id < activeStep.value) status = 'completed';
-      else if (step.id === activeStep.value) status = 'active';
+      if (!isReplayMode.value) {
+        status = pgsbcIsDone.value ? 'completed' : step.id === 1 ? 'active' : 'pending';
+      } else if (pgsbcIsDone.value) {
+        status = 'completed';
+      } else if (step.id < activeStep.value) {
+        status = 'completed';
+      } else if (step.id === activeStep.value) {
+        status = 'active';
+      }
     }
     return {
       id: step.id,
@@ -704,11 +932,12 @@ const recentTimelineEvents = computed(() => {
 });
 
 const animationClass = computed(() => {
-  if (!activeStep.value) return '';
+  if (!isReplayMode.value || !activeStep.value) return '';
   return `step-anim-s${Math.min(8, Math.max(1, activeStep.value))}`;
 });
 
 const decisionClass = computed(() => {
+  if (!isReplayMode.value) return '';
   if (lastDecision.value === 1) return 'decision-accept';
   if (lastDecision.value === 0) return 'decision-reject';
   return '';
@@ -800,6 +1029,130 @@ function togglePgsbcAutoplay() {
   exitStepReplay();
   if (pgsbcAutoplayOn.value) stopPgsbcAutoplay();
   else startPgsbcAutoplay(1500);
+}
+
+function getAcceptedHSnapshot(): number | null {
+  const accepted = pgsbcTaskState.value?.accepted_h_history ?? [];
+  if (accepted.length > 0) return accepted[accepted.length - 1] ?? null;
+  return pgsbcTaskState.value?.last_accepted_h ?? null;
+}
+
+function batchStatusText(status: BatchStatus): string {
+  if (status === 'success') return '成功';
+  if (status === 'failed') return '失败';
+  return '中断';
+}
+
+async function runTaskUntilDone() {
+  let guard = 0;
+  let stagnantCount = 0;
+  const guardLimit = Math.max((pgsbcTaskState.value?.max_iter ?? pgsbcMaxIter.value) + 8, 24);
+
+  while (!batchStopRequested.value && pgsbcHasTask.value && !pgsbcIsDone.value) {
+    const beforeRound = pgsbcRoundCount.value;
+    await iterateOnce();
+
+    if (pgsbcError.value) {
+      throw new Error(pgsbcError.value);
+    }
+
+    const afterRound = pgsbcRoundCount.value;
+    stagnantCount = afterRound > beforeRound ? 0 : stagnantCount + 1;
+    guard += 1;
+
+    if (stagnantCount >= 2) {
+      throw new Error('任务状态未推进，批处理已停止当前网络');
+    }
+    if (guard > guardLimit) {
+      throw new Error(`迭代超过安全上限 ${guardLimit}`);
+    }
+  }
+}
+
+function clearBatchResults() {
+  if (batchRunning.value) return;
+  batchResults.value = [];
+}
+
+function stopDemoBatch() {
+  batchStopRequested.value = true;
+}
+
+async function startDemoBatch() {
+  if (batchRunning.value || pgsbcLoading.value) return;
+  if (!demoKeys.length) {
+    pgsbcError.value = '未找到示例网络';
+    return;
+  }
+
+  exitStepReplay();
+  stopPgsbcAutoplay();
+  pgsbcError.value = '';
+  dataSource.value = 'demo';
+
+  batchRunning.value = true;
+  batchStopRequested.value = false;
+  batchCurrentKey.value = '';
+  batchResults.value = [];
+
+  try {
+    for (const key of demoKeys) {
+      if (batchStopRequested.value) break;
+
+      const title = demoGraphMeta[key]?.title ?? key;
+      const startedAt = new Date().toISOString();
+      batchCurrentKey.value = key;
+      selectedDemoKey.value = key;
+
+      let status: BatchStatus = 'success';
+      let errorMsg = '';
+
+      try {
+        const graph = cloneGraph(demoGraphs[key] ?? { nodes: [], edges: [] });
+        if (graph.nodes.length < 2) {
+          throw new Error('图至少需要 2 个节点');
+        }
+
+        boundTaskGraph.value = graph;
+        await createTask(graph);
+        if (pgsbcError.value) {
+          throw new Error(pgsbcError.value);
+        }
+        if (!pgsbcHasTask.value) {
+          throw new Error('任务未创建成功');
+        }
+
+        await runTaskUntilDone();
+        if (batchStopRequested.value) {
+          status = 'stopped';
+        } else if (!pgsbcIsDone.value) {
+          status = 'failed';
+          errorMsg = pgsbcError.value || '任务未正常结束';
+        }
+      } catch (ex: any) {
+        status = batchStopRequested.value ? 'stopped' : 'failed';
+        errorMsg = ex?.message ?? '批处理失败';
+      }
+
+      const endedAt = new Date().toISOString();
+      batchResults.value.push({
+        key,
+        title,
+        status,
+        rounds: pgsbcRoundCount.value,
+        acceptedH: getAcceptedHSnapshot(),
+        error: errorMsg || undefined,
+        startedAt,
+        endedAt,
+      });
+
+      if (batchStopRequested.value) break;
+    }
+  } finally {
+    batchCurrentKey.value = '';
+    batchRunning.value = false;
+    batchStopRequested.value = false;
+  }
 }
 
 function csvCell(value: unknown): string {
@@ -902,14 +1255,26 @@ watch(pgsbcHasTask, (hasTask) => {
   }
 });
 
-const chartDom = ref<HTMLDivElement | null>(null);
+const chartDomRaw = ref<HTMLDivElement | null>(null);
+const chartDomCluster = ref<HTMLDivElement | null>(null);
 const displayMode = computed(() => 'normal' as const);
+const rawLayoutMode = computed(() => 'sphere' as const);
+const clusterLayoutMode = computed(() => 'clustered' as const);
 const drawEdges = computed(() => true);
 
 useSphereChart({
-  chartDom,
-  graph: graphForRender,
+  chartDom: chartDomRaw,
+  graph: rawGraphForRender,
   displayMode,
+  layoutMode: rawLayoutMode,
+  drawEdges,
+});
+
+useSphereChart({
+  chartDom: chartDomCluster,
+  graph: clusteredGraphForRender,
+  displayMode,
+  layoutMode: clusterLayoutMode,
   drawEdges,
 });
 

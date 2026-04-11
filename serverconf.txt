@@ -510,3 +510,69 @@ curl -s http://127.0.0.1:5002/api/v1/crypto/health
 # app-server
 sudo systemctl is-active paper-server1 nginx
 curl -s http://127.0.0.1/api/v1/health
+
+--------------------------------------------------
+
+十七、每次改动后的更新命令（固定流程）
+--------------------------------------
+说明：每次代码改动后，按“改动类型”执行对应命令，不需要每次全量重装。
+
+A. 只改前端（`src/`、`index.html`、`vite` 配置）
+在 app-server 执行：
+cd ~/paper-visualization
+git pull
+npm ci
+npm run build
+sudo mkdir -p /var/www/paper-visualization
+sudo cp -r ~/paper-visualization/dist/* /var/www/paper-visualization/
+sudo systemctl restart nginx
+curl -s http://127.0.0.1/api/v1/health
+
+B. 改了 server1（`backend/server1` 或 `backend/shared_contract`）
+在 app-server 执行：
+cd ~/paper-visualization
+git pull
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart paper-server1
+sudo systemctl status paper-server1 --no-pager
+curl -s http://127.0.0.1:5001/api/v1/health
+curl -s http://127.0.0.1/api/v1/health
+
+C. 改了 server2（`backend/server2` 或 `backend/shared_contract`）
+在 crypto-server 执行：
+cd ~/paper-visualization
+git pull
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart paper-server2
+sudo systemctl status paper-server2 --no-pager
+curl -s http://127.0.0.1:5002/api/v1/crypto/health
+
+D. 同时改了前端 + server1 + server2（当前最常见）
+执行顺序：
+1) 先在 crypto-server 执行 C
+2) 再在 app-server 执行 B
+3) 最后在 app-server 执行 A
+4) 联动回归测试：
+curl -X POST http://127.0.0.1:5001/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+E. 只有依赖文件变更时，才必须额外关注
+1) 如果改了 `package.json` / `package-lock.json`：
+cd ~/paper-visualization
+npm ci
+
+2) 如果改了 `backend/requirements.txt`：
+cd ~/paper-visualization/backend
+source .venv/bin/activate
+pip install -r requirements.txt
+
+F. 如果改了 systemd 服务文件（`/etc/systemd/system/*.service`）
+sudo systemctl daemon-reload
+sudo systemctl restart paper-server1
+sudo systemctl restart paper-server2
+sudo systemctl restart nginx

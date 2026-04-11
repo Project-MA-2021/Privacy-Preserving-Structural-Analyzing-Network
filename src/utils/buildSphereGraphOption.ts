@@ -10,6 +10,7 @@ export interface BuildSphereOptionArgs {
   graph: GraphData | GraphDataWithEdgeKind;
   displayMode: DisplayMode;
   drawEdges: boolean;
+  layoutMode?: 'sphere' | 'clustered';
 
   radius?: number;
 
@@ -30,6 +31,62 @@ type EChartsGLOption = echarts.EChartsOption & {
   globe?: any;
   series?: any;
 };
+
+function fibonacciPoints(count: number, radius: number): Coord3D[] {
+  if (count <= 0) return [];
+  if (count === 1) return [[0, 0, radius]];
+
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const out: Coord3D[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const t = i / (count - 1);
+    const y = 1 - 2 * t;
+    const rr = Math.sqrt(1 - y * y);
+    const theta = goldenAngle * i;
+    const x = Math.cos(theta) * rr;
+    const z = Math.sin(theta) * rr;
+    out.push([x * radius, y * radius, z * radius]);
+  }
+  return out;
+}
+
+function computeClusteredLayout(
+  nodes: GraphData['nodes'],
+  clusters: Record<string, number>,
+  radius: number
+): Record<string, Coord3D> {
+  const coords: Record<string, Coord3D> = {};
+  if (!nodes.length) return coords;
+
+  const grouped = new Map<string, string[]>();
+  for (const node of nodes) {
+    const clusterId = clusters[node.id];
+    const key = Number.isFinite(clusterId) ? String(clusterId) : `__solo_${node.id}`;
+    const list = grouped.get(key) ?? [];
+    list.push(node.id);
+    grouped.set(key, list);
+  }
+
+  const clusterKeys = Array.from(grouped.keys());
+  const clusterCenters = fibonacciPoints(clusterKeys.length, radius * 0.62);
+
+  clusterKeys.forEach((key, i) => {
+    const center = clusterCenters[i] ?? [0, 0, 0];
+    const members = grouped.get(key) ?? [];
+    const localRadius =
+      members.length <= 1
+        ? 0
+        : Math.min(radius * 0.22, radius * (0.06 + Math.sqrt(members.length) * 0.035));
+    const localOffsets = fibonacciPoints(Math.max(1, members.length), localRadius);
+
+    members.forEach((nodeId, j) => {
+      const offset = localOffsets[j] ?? [0, 0, 0];
+      coords[nodeId] = [center[0] + offset[0], center[1] + offset[1], center[2] + offset[2]];
+    });
+  });
+
+  return coords;
+}
 
 function edgeKeyUndirected(u: string, v: string) {
   return u < v ? `${u}__${v}` : `${v}__${u}`;
@@ -80,7 +137,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     graph,
     displayMode,
     drawEdges,
-    radius = 10,
+    layoutMode = 'sphere',
+    radius = 6,
     clusterColors = ['#66ccff', '#ffcc66', '#9cff7a', '#ff7ad9'],
     defaultNodeColor = '#ffffff',
     highlightNodes = new Set<string>(),
@@ -89,8 +147,31 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
 
   if (!graph.nodes.length) return { series: [] };
 
-  const coords = computeSphereLayout(graph.nodes, radius);
-  const clusters = (graph as any).clusters || {};
+  const clusters = ((graph as any).clusters || {}) as Record<string, number>;
+  const baseCoords =
+    layoutMode === 'clustered' && Object.keys(clusters).length > 0
+      ? computeClusteredLayout(graph.nodes, clusters, radius)
+      : computeSphereLayout(graph.nodes, radius);
+  const verticalScale = 0.8;
+  const coords: Record<string, Coord3D> = {};
+  for (const [nodeId, coord] of Object.entries(baseCoords)) {
+    coords[nodeId] = [coord[0], coord[1] * verticalScale, coord[2]];
+  }
+  const axisExtent = radius * 2.0;
+  const axisExtentY = radius * 2.5;
+
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (const node of graph.nodes) {
+    const coord = coords[node.id];
+    if (!coord) continue;
+    cx += coord[0];
+    cy += coord[1];
+    cz += coord[2];
+  }
+  const denom = Math.max(1, graph.nodes.length);
+  const targetCoord: Coord3D = [cx / denom, cy / denom, cz / denom];
 
   const nodeData = graph.nodes.map((node) => {
     const [x, y, z] = coords[node.id] as Coord3D;
@@ -108,7 +189,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
       clusterIndex: cIndex,
 
       // per-node 大小
-      symbolSize: hi ? 14 : 10,
+      symbolSize: hi ? 10 : 6,
 
       itemStyle: {
         color: baseColor,
@@ -166,8 +247,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
 
     xAxis3D: {
       type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
+      min: -axisExtent,
+      max: axisExtent,
       axisLine: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisTick: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisLabel: { show: true, textStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
@@ -176,8 +257,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     },
     yAxis3D: {
       type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
+      min: -axisExtentY,
+      max: axisExtentY,
       axisLine: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisTick: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisLabel: { show: true, textStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
@@ -186,8 +267,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     },
     zAxis3D: {
       type: 'value',
-      min: -radius * 1.2,
-      max: radius * 1.2,
+      min: -axisExtent,
+      max: axisExtent,
       axisLine: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisTick: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisLabel: { show: true, textStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
@@ -196,13 +277,17 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     },
 
     grid3D: {
-      boxWidth: 200,
-      boxHeight: 200,
-      boxDepth: 200,
+      boxWidth: 165,
+      boxHeight: 165,
+      boxDepth: 165,
       viewControl: {
         autoRotate: true,
         autoRotateSpeed: 5,
         projection: 'perspective',
+        distance: 210,
+        minDistance: 115,
+        maxDistance: 420,
+        targetCoord,
       },
     },
 
@@ -213,7 +298,7 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
         type: 'scatter3D',
         coordinateSystem: 'cartesian3D',
         // 这里保持一个默认值，单点可被 data[i].symbolSize 覆盖
-        symbolSize: 10,
+        symbolSize: 6,
         data: nodeData,
         label: {
           show: true,

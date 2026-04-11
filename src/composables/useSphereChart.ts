@@ -7,11 +7,14 @@ import type { GraphData } from '../types/symbolNetwork';
 import type { GraphDataWithEdgeKind } from '../utils/graphCompare';
 import { buildSphereGraphOption, type DisplayMode } from '../utils/buildSphereGraphOption';
 
+type LayoutMode = 'sphere' | 'clustered';
+
 export interface UseSphereChartArgs {
   chartDom: Ref<HTMLDivElement | null>;
   graph: Ref<GraphData | GraphDataWithEdgeKind>;
   displayMode: Ref<DisplayMode>;
   drawEdges: Ref<boolean>;
+  layoutMode?: Ref<LayoutMode>;
 
   //  triad 高亮
   highlightNodes?: Ref<Set<string>>;
@@ -19,7 +22,15 @@ export interface UseSphereChartArgs {
 }
 
 export function useSphereChart(args: UseSphereChartArgs) {
-  const { chartDom, graph, displayMode, drawEdges, highlightNodes, highlightEdges } = args;
+  const {
+    chartDom,
+    graph,
+    displayMode,
+    drawEdges,
+    layoutMode,
+    highlightNodes,
+    highlightEdges,
+  } = args;
 
   let chart: echarts.ECharts | null = null;
 
@@ -29,6 +40,7 @@ export function useSphereChart(args: UseSphereChartArgs) {
         graph: graph.value,
         displayMode: displayMode.value,
         drawEdges: drawEdges.value,
+        layoutMode: layoutMode?.value ?? 'sphere',
         highlightNodes: highlightNodes?.value,
         highlightEdges: highlightEdges?.value,
       }) as any,
@@ -45,6 +57,7 @@ export function useSphereChart(args: UseSphereChartArgs) {
         graph: graph.value,
         displayMode: displayMode.value,
         drawEdges: drawEdges.value,
+        layoutMode: layoutMode?.value ?? 'sphere',
         highlightNodes: highlightNodes?.value,
         highlightEdges: highlightEdges?.value,
       }) as any
@@ -61,7 +74,14 @@ export function useSphereChart(args: UseSphereChartArgs) {
   });
 
   watch(
-    [graph, displayMode, drawEdges, highlightNodes ?? (() => null as any), highlightEdges ?? (() => null as any)],
+    [
+      graph,
+      displayMode,
+      drawEdges,
+      layoutMode ?? (() => null as any),
+      highlightNodes ?? (() => null as any),
+      highlightEdges ?? (() => null as any),
+    ],
     () => {
       if (!chart && chartDom.value) {
         initChart();
