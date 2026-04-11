@@ -157,6 +157,36 @@
             >
               {{ exportLoading ? '导出中...' : '导出 CSV' }}
             </button>
+            <button class="btn btn-small" type="button" @click="showParamHelp = !showParamHelp">
+              {{ showParamHelp ? '收起参数说明' : '查看参数含义' }}
+            </button>
+          </div>
+
+          <div class="param-help" v-if="showParamHelp">
+            <div class="param-group-title">输入与任务</div>
+            <div class="param-row"><span class="param-k">max_iter</span><span class="param-v">单网络最大迭代轮数 t_max。</span></div>
+            <div class="param-row"><span class="param-k">rb</span><span class="param-v">匿名化伪边比例，越大隐私更强但精度可能下降。</span></div>
+            <div class="param-row"><span class="param-k">task/status</span><span class="param-v">任务ID与状态（ready/running/done）。</span></div>
+            <div class="param-row"><span class="param-k">t</span><span class="param-v">当前已执行轮次。</span></div>
+            <div class="param-row"><span class="param-k">round_count</span><span class="param-v">后端累计有效轮次计数。</span></div>
+
+            <div class="param-group-title">论文过程变量</div>
+            <div class="param-row"><span class="param-k">A</span><span class="param-v">原始符号网络（真实结构与符号）。</span></div>
+            <div class="param-row"><span class="param-k">A^m</span><span class="param-v">R() 后匿名图，真实边 + 伪边。</span></div>
+            <div class="param-row"><span class="param-k">S_t</span><span class="param-v">第 t 轮候选聚类（Step2 产生）。</span></div>
+            <div class="param-row"><span class="param-k">H_t</span><span class="param-v">真实不平衡状态计数（Step3）。</span></div>
+            <div class="param-row"><span class="param-k">Ĥ_t</span><span class="param-v">扰动后状态计数（Step3，供隐私计算）。</span></div>
+            <div class="param-row"><span class="param-k">h_t</span><span class="param-v">当前轮全局目标值，越小越好。</span></div>
+            <div class="param-row"><span class="param-k">c_t</span><span class="param-v">更新决策标签，1=接受候选聚类，0=回退。</span></div>
+            <div class="param-row"><span class="param-k">accepted_h</span><span class="param-v">当前已接受的最优目标值。</span></div>
+
+            <div class="param-group-title">导出字段（JSON/CSV）</div>
+            <div class="param-row"><span class="param-k">candidate_h_real</span><span class="param-v">候选聚类在真实图上的不平衡计数。</span></div>
+            <div class="param-row"><span class="param-k">current_h_real</span><span class="param-v">当前已接受聚类在真实图上的不平衡计数。</span></div>
+            <div class="param-row"><span class="param-k">real/disturbed</span><span class="param-v">`real_unbalanced` 与 `disturbed_unbalanced`。</span></div>
+            <div class="param-row"><span class="param-k">iter_ms</span><span class="param-v">该轮耗时（毫秒）。</span></div>
+            <div class="param-row"><span class="param-k">t_before_commit</span><span class="param-v">该轮提交前的轮次索引。</span></div>
+            <div class="param-row"><span class="param-k">h_S</span><span class="param-v">论文目标：全局不平衡代价，PGSBC 通过迭代最小化它。</span></div>
           </div>
 
           <p class="hint">API：{{ apiBaseUrl }}</p>
@@ -556,6 +586,7 @@ const {
 const pgsbcTaskState = computed(() => pgsbcTask.value);
 const pgsbcRoundCount = computed(() => pgsbcTaskState.value?.round_count ?? pgsbcTaskState.value?.t ?? 0);
 const exportLoading = ref(false);
+const showParamHelp = ref(false);
 const batchRunning = ref(false);
 const batchStopRequested = ref(false);
 const batchCurrentKey = ref('');
