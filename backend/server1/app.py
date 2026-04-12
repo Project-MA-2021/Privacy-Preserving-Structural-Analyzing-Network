@@ -183,50 +183,122 @@ def _filter_graph_outliers(
         return {"nodes": nodes, "edges": edges}, report
 
     adj = _build_adj_with_sign({"nodes": nodes, "edges": edges})
-    degree: Dict[str, int] = {nid: len(neis) for nid, neis in adj.items()}
     node_ids = [str(n["id"]) for n in nodes]
-
-    isolated: List[str] = [nid for nid in node_ids if degree.get(nid, 0) == 0]
-    leaf_candidates: List[Tuple[float, str]] = []
+    neighbors: Dict[str, set[str]] = {nid: {x for x, _ in adj.get(nid, [])} for nid in node_ids}
+    degree: Dict[str, int] = {nid: len(neighbors.get(nid, set())) for nid in node_ids}
+    neg_degree: Dict[str, int] = {}
     for nid in node_ids:
-        if degree.get(nid, 0) != 1:
+        neg_degree[nid] = sum(1 for _, sign in adj.get(nid, []) if sign < 0)
+
+    # Build edge set for O(1) neighborhood-connectivity checks.
+    edge_set: set[str] = set()
+    for e in edges:
+        a = str(e.get("source", ""))
+        b = str(e.get("target", ""))
+        if not a or not b or a == b:
             continue
-        nbr, sign = adj.get(nid, [("", 1)])[0]
-        nbr_degree = degree.get(nbr, 0)
-        # Higher neighbor degree indicates a hub-spoke peripheral point.
-        # Slightly prefer removing positive leaf first to preserve conflict structure.
-        leaf_score = float(nbr_degree * 10 + (0 if sign < 0 else 1))
-        leaf_candidates.append((leaf_score, nid))
+        edge_set.add(_edge_key(a, b))
+
+    # Connected components.
+    comp_size: Dict[str, int] = {}
+    components: List[List[str]] = []
+    visited: set[str] = set()
+    for nid in node_ids:
+        if nid in visited:
+            continue
+        queue = [nid]
+        visited.add(nid)
+        comp: List[str] = []
+        while queue:
+            cur = queue.pop(0)
+            comp.append(cur)
+            for nxt in neighbors.get(cur, set()):
+                if nxt in visited:
+                    continue
+                visited.add(nxt)
+                queue.append(nxt)
+        components.append(comp)
+        size = len(comp)
+        for x in comp:
+            comp_size[x] = size
+
+    largest_comp = max((len(c) for c in components), default=0)
+    # Dynamic threshold for small components; stronger on larger graphs.
+    small_comp_th = max(2, min(10, int(round(math.log2(max(2, before_nodes))))))
+
+    def local_support_ratio(nid: str) -> float:
+        neis = list(neighbors.get(nid, set()))
+        d = len(neis)
+        if d < 2:
+            return 0.0
+        linked_pairs = 0
+        total_pairs = d * (d - 1) // 2
+        for i in range(d):
+            a = neis[i]
+            for j in range(i + 1, d):
+                b = neis[j]
+                if _edge_key(a, b) in edge_set:
+                    linked_pairs += 1
+        return float(linked_pairs) / float(total_pairs) if total_pairs > 0 else 0.0
+
+    isolated_count = sum(1 for nid in node_ids if degree.get(nid, 0) == 0)
+
+    candidate_scores: List[Tuple[float, int, str]] = []
+    for nid in node_ids:
+        d = degree.get(nid, 0)
+        nd = neg_degree.get(nid, 0)
+        csz = comp_size.get(nid, 1)
+        support = local_support_ratio(nid)
+        nbr_deg_max = max((degree.get(nbr, 0) for nbr in neighbors.get(nid, set())), default=0)
+
+        in_small_component = csz < largest_comp and csz <= small_comp_th
+        weak_fringe = d <= 2 or (d <= 4 and support < 0.08)
+        if not in_small_component and not weak_fringe:
+            continue
+
+        priority = 0.0
+        if in_small_component:
+            priority += 36.0 + float(max(0, small_comp_th - csz))
+        if d == 0:
+            priority += 90.0
+        elif d == 1:
+            priority += 58.0
+        elif d == 2:
+            priority += 34.0
+        elif d == 3:
+            priority += 14.0
+        else:
+            priority += 6.0
+        priority += (1.0 - support) * 14.0
+        priority += min(18.0, float(nbr_deg_max) * (1.15 if d <= 2 else 0.28))
+        # Keep some signed-information-rich nodes.
+        priority -= min(12.0, float(nd) * 4.0)
+        # keep slight deterministic tie-breaking on lower degree first
+        candidate_scores.append((priority, d, nid))
+
+    if not candidate_scores:
+        report["reason"] = "no_outlier_candidates"
+        return {"nodes": nodes, "edges": edges}, report
 
     max_remove = max(1, int(before_nodes * max(0.0, min(0.9, max_remove_ratio))))
+    ordered = sorted(candidate_scores, key=lambda x: (-x[0], x[1], x[2]))
     selected: set[str] = set()
-    for nid in isolated:
+    for _, _, nid in ordered:
         selected.add(nid)
         if len(selected) >= max_remove:
             break
-
-    if len(selected) < max_remove:
-        for _, nid in sorted(leaf_candidates, key=lambda x: (-x[0], x[1])):
-            if nid in selected:
-                continue
-            selected.add(nid)
-            if len(selected) >= max_remove:
-                break
-
-    if not selected:
-        report["reason"] = "no_outlier_candidates"
-        return {"nodes": nodes, "edges": edges}, report
 
     # Safety: keep at least 2 nodes and at least ~62% of original nodes.
     min_keep_nodes = max(2, int(math.ceil(before_nodes * 0.62)))
     if before_nodes - len(selected) < min_keep_nodes:
         over = min_keep_nodes - (before_nodes - len(selected))
-        # remove less important selected nodes (leaf nodes first)
+        # Drop lowest-priority removals first.
+        priority_map = {nid: pri for pri, _, nid in ordered}
         ordered_selected = sorted(
             selected,
             key=lambda nid: (
-                degree.get(nid, 99),  # keep non-isolated removal lower priority
-                -(degree.get(adj.get(nid, [("", 0)])[0][0], 0) if degree.get(nid, 0) == 1 else 0),
+                priority_map.get(nid, 0.0),
+                degree.get(nid, 99),
                 nid,
             ),
         )
@@ -261,8 +333,10 @@ def _filter_graph_outliers(
             "after_edges": len(kept_edges),
             "removed_nodes": before_nodes - len(kept_nodes),
             "removed_edges": before_edges - len(kept_edges),
-            "isolated_candidates": len(isolated),
-            "leaf_candidates": len(leaf_candidates),
+            "isolated_candidates": int(isolated_count),
+            "candidate_count": len(candidate_scores),
+            "small_component_threshold": int(small_comp_th),
+            "largest_component_size": int(largest_comp),
             "reason": "applied",
         }
     )

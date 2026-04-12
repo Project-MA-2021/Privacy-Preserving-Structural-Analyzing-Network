@@ -619,3 +619,18 @@ pip install -r requirements.txt
 sudo systemctl restart paper-server1
 curl -s http://127.0.0.1:5001/api/v1/health
 curl -s http://127.0.0.1/api/v1/health
+
+2026-04-12 outlier-filter v2 (stronger structural pruning)
+---------------------------------------------------------
+Changed file:
+- backend/server1/app.py
+
+Deploy on app-server:
+cd ~/paper-visualization
+git pull
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart paper-server1
+curl -s http://127.0.0.1:5001/api/v1/health
+curl -s http://127.0.0.1/api/v1/health
