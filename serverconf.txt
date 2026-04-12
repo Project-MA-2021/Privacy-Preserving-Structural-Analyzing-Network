@@ -576,3 +576,31 @@ sudo systemctl daemon-reload
 sudo systemctl restart paper-server1
 sudo systemctl restart paper-server2
 sudo systemctl restart nginx
+
+--------------------------------------------------
+
+2026-04-12 strict HM-Louvain update
+-----------------------------------
+This update modified:
+- backend/server1/app.py
+- backend/server2/app.py
+
+Deploy/restart command order:
+1) On crypto-server:
+cd ~/paper-visualization
+git pull
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart paper-server2
+curl -s http://127.0.0.1:5002/api/v1/crypto/health
+
+2) On app-server:
+cd ~/paper-visualization
+git pull
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart paper-server1
+curl -s http://127.0.0.1:5001/api/v1/health
+curl -s http://127.0.0.1/api/v1/health

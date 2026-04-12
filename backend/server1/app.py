@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -22,6 +23,7 @@ from shared_contract.http import err, ok
 SERVER2_URL = os.getenv("SERVER2_URL", "http://127.0.0.1:5002")
 DEFAULT_MAX_ITER = 8
 DEFAULT_RB = 0.25
+STRICT_ARGMIN_WITH_SERVER2 = os.getenv("STRICT_ARGMIN_WITH_SERVER2", "1") != "0"
 
 app = Flask(__name__)
 CORS(app)
@@ -168,6 +170,62 @@ def _build_initial_labels(graph: Dict[str, Any]) -> Dict[str, int]:
     return {str(n["id"]): idx for idx, n in enumerate(graph.get("nodes", []))}
 
 
+def _is_unbalanced(sign: int, same_cluster: bool) -> bool:
+    return (sign >= 0 and not same_cluster) or (sign < 0 and same_cluster)
+
+
+def _build_signed_adjacency(graph: Dict[str, Any]) -> Dict[str, List[Tuple[str, int]]]:
+    adjacency: Dict[str, List[Tuple[str, int]]] = {str(n["id"]): [] for n in graph.get("nodes", [])}
+    for e in graph.get("edges", []):
+        a = str(e["source"])
+        b = str(e["target"])
+        sign = 1 if int(e.get("sign", 1)) >= 0 else -1
+        adjacency.setdefault(a, []).append((b, sign))
+        adjacency.setdefault(b, []).append((a, sign))
+    return adjacency
+
+
+def _node_local_unbalanced_count(
+    adjacency: Dict[str, List[Tuple[str, int]]],
+    labels: Dict[str, int],
+    node: str,
+    candidate_cluster: int,
+) -> int:
+    local_unbalanced = 0
+    for neighbor, sign in adjacency.get(node, []):
+        neighbor_cluster = labels.get(neighbor, -1)
+        same_cluster = candidate_cluster == neighbor_cluster
+        if _is_unbalanced(sign, same_cluster):
+            local_unbalanced += 1
+    return local_unbalanced
+
+
+def _cluster_boundary_unbalanced_count(
+    graph: Dict[str, Any],
+    labels: Dict[str, int],
+    cluster_nodes: set[str],
+    candidate_cluster: int,
+) -> int:
+    local_unbalanced = 0
+    for e in graph.get("edges", []):
+        a = str(e["source"])
+        b = str(e["target"])
+        a_in = a in cluster_nodes
+        b_in = b in cluster_nodes
+
+        if a_in == b_in:
+            # Both endpoints inside the super node (constant during move), or both outside.
+            continue
+
+        sign = 1 if int(e.get("sign", 1)) >= 0 else -1
+        ca = candidate_cluster if a_in else labels.get(a, -1)
+        cb = candidate_cluster if b_in else labels.get(b, -1)
+        same_cluster = ca == cb
+        if _is_unbalanced(sign, same_cluster):
+            local_unbalanced += 1
+    return local_unbalanced
+
+
 def _generate_anonymized_graph(real_graph: Dict[str, Any], rb: float, seed: int) -> Dict[str, Any]:
     rng = random.Random(seed)
     nodes = [{"id": str(n["id"])} for n in real_graph.get("nodes", [])]
@@ -206,111 +264,143 @@ def _generate_anonymized_graph(real_graph: Dict[str, Any], rb: float, seed: int)
     return {"nodes": nodes, "edges": edges}
 
 
-def _build_candidate_labels(task: TaskState) -> Dict[str, int]:
+def _build_candidate_labels(task: TaskState) -> Tuple[Dict[str, int], Dict[str, Any]]:
     if task.anonymized_graph is None:
-        return dict(task.current_labels)
+        return dict(task.current_labels), {"algorithm": "HM-Louvain (strict)", "note": "anonymized graph missing"}
 
-    # HM-Louvain-like candidate generation:
-    # phase 1: node greedy; phase 2: cluster greedy; both repeated to convergence.
     labels = dict(task.current_labels)
     if not labels:
-        return labels
+        return labels, {"algorithm": "HM-Louvain (strict)", "note": "empty label set"}
 
     work_graph = task.anonymized_graph
-    neighbors = _build_neighbors(work_graph)
+    adjacency = _build_signed_adjacency(work_graph)
     nodes = sorted(labels.keys())
+    q = max(2, len(nodes))
 
-    def score(cur_labels: Dict[str, int]) -> int:
-        val, _ = _compute_unbalanced_edges(work_graph, cur_labels)
-        return int(val)
+    # Algorithm 1 says both inner loops run "until labels are not changed".
+    # Keep a safety cap to avoid infinite oscillation on pathological inputs.
+    pass_cap = max(8, int(math.ceil(math.log2(q))) + 6)
 
-    def node_greedy_pass() -> bool:
-        changed = False
+    clusters_before = len(set(labels.values()))
+
+    node_passes = 0
+    node_moves = 0
+    node_evaluations = 0
+    node_server2_select_calls = 0
+    node_server2_select_success = 0
+    node_converged = False
+    while node_passes < pass_cap:
+        node_passes += 1
+        changed_this_pass = False
+
         for node in nodes:
-            cur_cluster = labels[node]
-            candidate_clusters = {cur_cluster}
-            for nbr in neighbors.get(node, set()):
-                if nbr in labels:
-                    candidate_clusters.add(labels[nbr])
+            current_cluster = labels[node]
+            neighbor_clusters = {labels[nbr] for nbr, _ in adjacency.get(node, []) if nbr in labels}
+            candidate_clusters = [current_cluster] + [x for x in sorted(neighbor_clusters) if x != current_cluster]
 
-            best_cluster = cur_cluster
-            best_score = score(labels)
-            for cluster in sorted(candidate_clusters):
-                if cluster == cur_cluster:
-                    continue
-                temp = dict(labels)
-                temp[node] = cluster
-                h_val = score(temp)
-                if h_val < best_score:
-                    best_score = h_val
-                    best_cluster = cluster
-            if best_cluster != cur_cluster:
+            candidate_scores: List[float] = []
+            for cluster in candidate_clusters:
+                node_evaluations += 1
+                local_val = _node_local_unbalanced_count(adjacency, labels, node, cluster)
+                candidate_scores.append(float(local_val))
+
+            node_server2_select_calls += 1
+            selected_idx, delegated = _select_min_index(candidate_scores)
+            if delegated:
+                node_server2_select_success += 1
+            if selected_idx < 0 or selected_idx >= len(candidate_clusters):
+                selected_idx = 0
+            best_cluster = candidate_clusters[selected_idx]
+
+            if best_cluster != current_cluster:
                 labels[node] = best_cluster
-                changed = True
-        return changed
+                node_moves += 1
+                changed_this_pass = True
 
-    def cluster_greedy_pass() -> bool:
-        changed = False
-        members: Dict[int, List[str]] = {}
-        for n, cid in labels.items():
-            members.setdefault(cid, []).append(n)
+        if not changed_this_pass:
+            node_converged = True
+            break
 
-        current_score = score(labels)
-        for cluster_id in sorted(list(members.keys())):
-            cluster_nodes = members.get(cluster_id, [])
+    cluster_passes = 0
+    cluster_moves = 0
+    cluster_evaluations = 0
+    cluster_server2_select_calls = 0
+    cluster_server2_select_success = 0
+    cluster_converged = False
+    while cluster_passes < pass_cap:
+        cluster_passes += 1
+        changed_this_pass = False
+        cluster_ids = sorted(set(labels.values()))
+
+        for cluster_id in cluster_ids:
+            cluster_nodes = {n for n, cid in labels.items() if cid == cluster_id}
             if not cluster_nodes:
                 continue
 
             candidate_targets: set[int] = set()
-            cluster_set = set(cluster_nodes)
-            for e in work_graph.get("edges", []):
-                a = str(e["source"])
-                b = str(e["target"])
-                if a in cluster_set and b in labels and labels[b] != cluster_id:
-                    candidate_targets.add(labels[b])
-                if b in cluster_set and a in labels and labels[a] != cluster_id:
-                    candidate_targets.add(labels[a])
+            for node in cluster_nodes:
+                for nbr, _ in adjacency.get(node, []):
+                    if nbr in cluster_nodes:
+                        continue
+                    nbr_cluster = labels.get(nbr)
+                    if nbr_cluster is None or nbr_cluster == cluster_id:
+                        continue
+                    candidate_targets.add(nbr_cluster)
 
             if not candidate_targets:
                 continue
 
-            best_target = cluster_id
-            best_score = current_score
-            for target in sorted(candidate_targets):
-                temp = dict(labels)
-                for n in cluster_nodes:
-                    temp[n] = target
-                h_val = score(temp)
-                if h_val < best_score:
-                    best_score = h_val
-                    best_target = target
+            candidate_clusters = [cluster_id] + [x for x in sorted(candidate_targets) if x != cluster_id]
+            candidate_scores: List[float] = []
+            for target_cluster in candidate_clusters:
+                cluster_evaluations += 1
+                local_val = _cluster_boundary_unbalanced_count(work_graph, labels, cluster_nodes, target_cluster)
+                candidate_scores.append(float(local_val))
 
-            if best_target != cluster_id:
-                for n in cluster_nodes:
-                    labels[n] = best_target
-                changed = True
-                current_score = best_score
-        return changed
+            cluster_server2_select_calls += 1
+            selected_idx, delegated = _select_min_index(candidate_scores)
+            if delegated:
+                cluster_server2_select_success += 1
+            if selected_idx < 0 or selected_idx >= len(candidate_clusters):
+                selected_idx = 0
+            best_cluster = candidate_clusters[selected_idx]
 
-    pass_cap = max(2, int(len(labels).bit_length()) + 1)
-    outer_cap = 10
-    for _ in range(outer_cap):
-        changed_outer = False
+            if best_cluster != cluster_id:
+                for node in cluster_nodes:
+                    labels[node] = best_cluster
+                cluster_moves += len(cluster_nodes)
+                changed_this_pass = True
 
-        for _ in range(pass_cap):
-            if not node_greedy_pass():
-                break
-            changed_outer = True
-
-        for _ in range(pass_cap):
-            if not cluster_greedy_pass():
-                break
-            changed_outer = True
-
-        if not changed_outer:
+        if not changed_this_pass:
+            cluster_converged = True
             break
 
-    return labels
+    clusters_after = len(set(labels.values()))
+    candidate_h_anon, _ = _compute_unbalanced_edges(work_graph, labels)
+    meta = {
+        "algorithm": "HM-Louvain (strict)",
+        "pass_cap": pass_cap,
+        "clusters_before": clusters_before,
+        "clusters_after": clusters_after,
+        "candidate_h_anon": int(candidate_h_anon),
+        "phase1_node": {
+            "passes": node_passes,
+            "moves": node_moves,
+            "evaluations": node_evaluations,
+            "converged": node_converged,
+            "server2_select_calls": node_server2_select_calls,
+            "server2_select_success": node_server2_select_success,
+        },
+        "phase2_cluster": {
+            "passes": cluster_passes,
+            "moves": cluster_moves,
+            "evaluations": cluster_evaluations,
+            "converged": cluster_converged,
+            "server2_select_calls": cluster_server2_select_calls,
+            "server2_select_success": cluster_server2_select_success,
+        },
+    }
+    return labels, meta
 
 
 def _disturb_balance_states(
@@ -375,6 +465,32 @@ def _compare_on_server2(prev_score: float | None, new_score: float) -> int:
     if not body.get("ok"):
         raise RuntimeError(f"server2 compare failed: {body}")
     return int(body["data"]["c_t"])
+
+
+def _select_min_index(scores: List[float]) -> Tuple[int, bool]:
+    if not scores:
+        return 0, False
+
+    local_idx = min(range(len(scores)), key=lambda i: scores[i])
+    if not STRICT_ARGMIN_WITH_SERVER2:
+        return local_idx, False
+
+    try:
+        r = requests.post(
+            f"{SERVER2_URL}/api/v1/crypto/select-min",
+            json={"scores": scores},
+            timeout=10,
+        )
+        r.raise_for_status()
+        body = r.json()
+        if not body.get("ok"):
+            return local_idx, False
+        idx = int(body.get("data", {}).get("best_index", local_idx))
+        if idx < 0 or idx >= len(scores):
+            return local_idx, False
+        return idx, True
+    except Exception:
+        return local_idx, False
 
 
 def _compute_encrypted_global_h(task: TaskState, disturbed_h_map: Dict[str, int]) -> float:
@@ -522,7 +638,7 @@ def iterate_task(task_id: str):
             )
             task.initialized = True
 
-        candidate_labels = _build_candidate_labels(task)
+        candidate_labels, candidate_meta = _build_candidate_labels(task)
         cand_h_real, _ = _compute_unbalanced_edges(task.graph, candidate_labels)
         _log(
             task,
@@ -531,7 +647,9 @@ def iterate_task(task_id: str):
             "generated a candidate clustering S_t",
             {
                 "candidate_h_real": cand_h_real,
+                "candidate_h_anon": candidate_meta.get("candidate_h_anon"),
                 "candidate_labels": candidate_labels,
+                "hm_louvain": candidate_meta,
             },
         )
 
@@ -591,6 +709,7 @@ def iterate_task(task_id: str):
                 "c_t": int(c_t),
                 "accepted_h": float(accepted_h),
                 "candidate_h_real": float(cand_h_real),
+                "candidate_h_anon": float(candidate_meta.get("candidate_h_anon", 0)),
                 "current_h_real": float(task.current_h_real) if task.current_h_real is not None else None,
                 "real_unbalanced": int(real_unbalanced_count),
                 "disturbed_unbalanced": int(disturbed_unbalanced_count),

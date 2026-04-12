@@ -89,5 +89,24 @@ def compare():
     return ok({"c_t": c_t})
 
 
+@app.post("/api/v1/crypto/select-min")
+def select_min():
+    body = _get_body()
+    scores = body.get("scores")
+    if not isinstance(scores, list) or not scores:
+        return err("INVALID_PAYLOAD", "field 'scores' must be a non-empty numeric array")
+
+    values: list[float] = []
+    try:
+        values = [float(x) for x in scores]
+    except Exception:
+        return err("INVALID_PAYLOAD", "all score values must be numeric")
+
+    best_index = min(range(len(values)), key=lambda i: values[i])
+    best_score = values[best_index]
+    one_hot = [1 if i == best_index else 0 for i in range(len(values))]
+    return ok({"best_index": int(best_index), "best_score": float(best_score), "labels": one_hot})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=False, use_reloader=False)
