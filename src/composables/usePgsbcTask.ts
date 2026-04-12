@@ -41,6 +41,7 @@ export interface PgsbcExportRow {
   c_t: number;
   accepted_h: number;
   candidate_h_real: number;
+  candidate_h_anon?: number;
   current_h_real: number | null;
   real_unbalanced: number;
   disturbed_unbalanced: number;
@@ -58,12 +59,22 @@ export interface PgsbcExportPayload {
     t: number;
     max_iter: number;
     rb: number;
+    input_node_count?: number;
+    input_edge_count?: number;
     node_count: number;
     real_edge_count: number;
     anon_edge_count: number;
+    outlier_filter_enabled?: boolean;
+    outlier_filter_report?: Record<string, unknown>;
     round_count: number;
   };
   rows: PgsbcExportRow[];
+}
+
+export interface CreateTaskOptions {
+  outlier_filter?: boolean;
+  outlier_max_remove_ratio?: number;
+  outlier_min_nodes?: number;
 }
 
 function getApiBaseUrl() {
@@ -144,7 +155,7 @@ export function usePgsbcTask() {
     return body.data;
   }
 
-  async function createTask(graph: GraphData) {
+  async function createTask(graph: GraphData, options?: CreateTaskOptions) {
     loading.value = true;
     clearError();
     stopAutoplay();
@@ -157,6 +168,7 @@ export function usePgsbcTask() {
             graph,
             max_iter: maxIter.value,
             rb: rb.value,
+            ...(options ?? {}),
           }),
         }
       );

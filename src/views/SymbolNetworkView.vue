@@ -158,6 +158,12 @@
               placeholder="rb"
             />
           </div>
+          <div class="form-row form-row-small">
+            <label>
+              <input type="checkbox" v-model="backendOutlierFilterEnabled" :disabled="pgsbcLoading || batchRunning" />
+              后端离群过滤（参与计算）
+            </label>
+          </div>
 
           <div class="task-actions">
             <button class="btn btn-small" type="button" :disabled="pgsbcLoading && !batchRunning" @click="createPgsbcTask">
@@ -602,6 +608,7 @@ const cropTargetNodes = ref(220);
 const cropTargetEdges = ref(420);
 const cropSeed = ref(20260412);
 const cropSummaryText = ref('');
+const backendOutlierFilterEnabled = ref(true);
 const clusterOutlierFilterEnabled = ref(true);
 const newNodeLabel = ref('');
 const newEdgeSource = ref('');
@@ -2044,7 +2051,9 @@ function createPgsbcTask() {
     return;
   }
   boundTaskGraph.value = graph;
-  void createTask(graph);
+  void createTask(graph, {
+    outlier_filter: backendOutlierFilterEnabled.value,
+  });
 }
 
 function iteratePgsbcTask() {
@@ -2166,7 +2175,9 @@ async function startDemoBatch() {
           throw new Error('批处理已停止');
         }
 
-        await createTask(graph);
+        await createTask(graph, {
+          outlier_filter: backendOutlierFilterEnabled.value,
+        });
         if (pgsbcError.value) {
           throw new Error(pgsbcError.value);
         }
@@ -2242,6 +2253,7 @@ function buildExportCsv(rows: PgsbcExportRow[]): string {
     'c_t',
     'accepted_h',
     'candidate_h_real',
+    'candidate_h_anon',
     'current_h_real',
     'real_unbalanced',
     'disturbed_unbalanced',
