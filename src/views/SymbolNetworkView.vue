@@ -82,9 +82,10 @@
 
           <div class="form-block">
             <div class="form-label">上传与裁剪</div>
-            <div class="form-row form-row-small">
+            <div class="form-row form-row-small" v-if="showAdvancedSwitches">
               <label><input type="checkbox" v-model="cropEnabled" /> 导入时启用裁剪</label>
             </div>
+            <p class="hint">默认论文模式：导入不裁剪，保留原始网络结构。</p>
             <div class="form-row">
               <input
                 v-model.number="cropTargetNodes"
@@ -158,13 +159,13 @@
               placeholder="rb"
             />
           </div>
-          <div class="form-row form-row-small">
+          <div class="form-row form-row-small" v-if="showAdvancedSwitches">
             <label>
               <input type="checkbox" v-model="backendOutlierFilterEnabled" :disabled="pgsbcLoading || batchRunning" />
               后端离群过滤
             </label>
           </div>
-          <p class="hint">说明：该开关会影响后端计算，修改后请“重建任务”生效。</p>
+          <p class="hint">默认论文模式：后端不做离群筛除，直接按原始算法计算。</p>
 
           <div class="task-actions">
             <button class="btn btn-small" type="button" :disabled="pgsbcLoading && !batchRunning" @click="createPgsbcTask">
@@ -589,12 +590,13 @@ const selectedDemoKey = ref(demoKeys[0] ?? '');
 
 const customGraph = ref<GraphData>({ nodes: [], edges: [] });
 const customImportInput = ref<HTMLInputElement | null>(null);
-const cropEnabled = ref(true);
+const showAdvancedSwitches = false;
+const cropEnabled = ref(false);
 const cropTargetNodes = ref(220);
 const cropTargetEdges = ref(420);
 const cropSeed = ref(20260412);
 const cropSummaryText = ref('');
-const backendOutlierFilterEnabled = ref(true);
+const backendOutlierFilterEnabled = ref(false);
 const newNodeLabel = ref('');
 const newEdgeSource = ref('');
 const newEdgeTarget = ref('');

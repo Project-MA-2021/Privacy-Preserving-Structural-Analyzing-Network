@@ -36,7 +36,7 @@ class TaskState:
     input_graph: Dict[str, Any] | None = None
     max_iter: int = DEFAULT_MAX_ITER
     rb: float = DEFAULT_RB
-    outlier_filter_enabled: bool = True
+    outlier_filter_enabled: bool = False
     outlier_filter_report: Dict[str, Any] = field(default_factory=dict)
     t: int = 0
     initialized: bool = False
@@ -815,7 +815,7 @@ def create_task():
     if rb < 0 or rb > 1:
         return err("INVALID_RB", "rb must be between 0 and 1")
 
-    outlier_filter_enabled = bool(body.get("outlier_filter", True))
+    outlier_filter_enabled = bool(body.get("outlier_filter", False))
     outlier_max_remove_ratio = float(body.get("outlier_max_remove_ratio", 0.28))
     if outlier_max_remove_ratio < 0 or outlier_max_remove_ratio > 0.9:
         return err("INVALID_OUTLIER_RATIO", "outlier_max_remove_ratio must be between 0 and 0.9")
