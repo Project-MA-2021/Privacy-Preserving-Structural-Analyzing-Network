@@ -152,13 +152,15 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     layoutMode === 'clustered' && Object.keys(clusters).length > 0
       ? computeClusteredLayout(graph.nodes, clusters, radius)
       : computeSphereLayout(graph.nodes, radius);
-  const verticalScale = layoutMode === 'clustered' ? 0.95 : 0.82;
+  // Keep x/y/z isotropic so a sphere stays visually spherical even on larger graphs.
   const coords: Record<string, Coord3D> = {};
+  let maxAbsCoord = radius;
   for (const [nodeId, coord] of Object.entries(baseCoords)) {
-    coords[nodeId] = [coord[0], coord[1] * verticalScale, coord[2]];
+    coords[nodeId] = [coord[0], coord[1], coord[2]];
+    maxAbsCoord = Math.max(maxAbsCoord, Math.abs(coord[0]), Math.abs(coord[1]), Math.abs(coord[2]));
   }
-  const axisExtent = layoutMode === 'clustered' ? radius * 2.05 : radius * 1.75;
-  const axisExtentY = layoutMode === 'clustered' ? radius * 2.45 : radius * 2.25;
+  const axisPadding = layoutMode === 'clustered' ? 1.18 : 1.1;
+  const axisExtent = maxAbsCoord * axisPadding;
 
   let cx = 0;
   let cy = 0;
@@ -257,8 +259,8 @@ export function buildSphereGraphOption(args: BuildSphereOptionArgs): EChartsGLOp
     },
     yAxis3D: {
       type: 'value',
-      min: -axisExtentY,
-      max: axisExtentY,
+      min: -axisExtent,
+      max: axisExtent,
       axisLine: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisTick: { lineStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
       axisLabel: { show: true, textStyle: { color: 'rgba(0,0,0,0)', opacity: 0 } },
