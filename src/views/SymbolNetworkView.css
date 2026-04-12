@@ -189,6 +189,10 @@
   gap: 8px;
 }
 
+.file-input-hidden {
+  display: none;
+}
+
 .param-help {
   margin-top: 8px;
   border-radius: 10px;

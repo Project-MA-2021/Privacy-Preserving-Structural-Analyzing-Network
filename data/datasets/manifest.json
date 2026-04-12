@@ -1,0 +1,62 @@
+[
+  {
+    "dataset": "bitcoin-alpha",
+    "source": "soc-sign-bitcoinalpha.csv.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 232,
+    "neg": 28,
+    "csv": "signed_small_bitcoin_alpha.csv",
+    "json": "signed_small_bitcoin_alpha.graph.json"
+  },
+  {
+    "dataset": "bitcoin-otc",
+    "source": "soc-sign-bitcoinotc.csv.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 229,
+    "neg": 31,
+    "csv": "signed_small_bitcoin_otc.csv",
+    "json": "signed_small_bitcoin_otc.graph.json"
+  },
+  {
+    "dataset": "epinions",
+    "source": "soc-sign-epinions.txt.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 189,
+    "neg": 71,
+    "csv": "signed_small_epinions.csv",
+    "json": "signed_small_epinions.graph.json"
+  },
+  {
+    "dataset": "slashdot-081106",
+    "source": "soc-sign-Slashdot081106.txt.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 156,
+    "neg": 104,
+    "csv": "signed_small_slashdot_081106.csv",
+    "json": "signed_small_slashdot_081106.graph.json"
+  },
+  {
+    "dataset": "slashdot-090216",
+    "source": "soc-sign-Slashdot090216.txt.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 162,
+    "neg": 98,
+    "csv": "signed_small_slashdot_090216.csv",
+    "json": "signed_small_slashdot_090216.graph.json"
+  },
+  {
+    "dataset": "slashdot-090221",
+    "source": "soc-sign-Slashdot090221.txt.gz",
+    "nodes": 120,
+    "edges": 260,
+    "pos": 159,
+    "neg": 101,
+    "csv": "signed_small_slashdot_090221.csv",
+    "json": "signed_small_slashdot_090221.graph.json"
+  }
+]

@@ -79,6 +79,60 @@
             <button class="btn" type="button" @click="addEdge" :disabled="customGraph.nodes.length < 2">添加边</button>
             <p class="hint">当前边：{{ customGraph.edges.length }} 条</p>
           </div>
+
+          <div class="form-block">
+            <div class="form-label">上传与裁剪</div>
+            <div class="form-row form-row-small">
+              <label><input type="checkbox" v-model="cropEnabled" /> 导入时启用裁剪</label>
+            </div>
+            <div class="form-row">
+              <input
+                v-model.number="cropTargetNodes"
+                class="input"
+                type="number"
+                min="20"
+                step="10"
+                title="裁剪后的目标节点数"
+                placeholder="目标节点数"
+              />
+              <input
+                v-model.number="cropTargetEdges"
+                class="input"
+                type="number"
+                min="40"
+                step="20"
+                title="裁剪后的目标边数"
+                placeholder="目标边数"
+              />
+            </div>
+            <div class="form-row">
+              <input
+                v-model.number="cropSeed"
+                class="input"
+                type="number"
+                step="1"
+                title="裁剪随机种子（相同参数可复现）"
+                placeholder="seed"
+              />
+              <button class="btn" type="button" :disabled="pgsbcLoading || batchRunning" @click="openCustomImportFile">
+                上传 CSV/JSON
+              </button>
+              <button class="btn" type="button" :disabled="batchRunning" @click="exportCustomGraphJson">导出 JSON</button>
+            </div>
+            <input
+              ref="customImportInput"
+              class="file-input-hidden"
+              type="file"
+              accept=".csv,.txt,.json,text/csv,text/plain,application/json"
+              @change="handleCustomImportFile"
+            />
+            <p class="hint">
+              裁剪策略：先选结构锚点，再按邻域扩展，最后按正/负边比例保留关键边，尽量维持结构平衡特征。
+            </p>
+            <p class="hint">CSV 推荐格式：`source,target,sign`（`sign` 取 `1/-1`）。</p>
+            <p class="hint">上传后会立即执行校验，并弹窗提示结果。</p>
+            <p class="hint" v-if="cropSummaryText">{{ cropSummaryText }}</p>
+          </div>
         </section>
 
         <section class="sidebar-section">
@@ -482,11 +536,54 @@ type ReplayEvent = PgsbcTimelineEvent & {
   network_key?: string;
   network_title?: string;
 };
+type LooseRecord = Record<string, unknown>;
+type NodeScore = {
+  degree: number;
+  posDegree: number;
+  negDegree: number;
+  mixedDegree: number;
+  score: number;
+};
+type CropReport = {
+  beforeNodes: number;
+  beforeEdges: number;
+  afterNodes: number;
+  afterEdges: number;
+  beforePos: number;
+  beforeNeg: number;
+  afterPos: number;
+  afterNeg: number;
+  cropped: boolean;
+};
+type CsvValidationIssue = {
+  line: number;
+  reason: string;
+  raw: string;
+};
+type CsvValidationReport = {
+  delimiter: ',' | '\t' | ' ';
+  hasHeader: boolean;
+  totalLines: number;
+  dataLines: number;
+  parsedNodes: number;
+  parsedEdges: number;
+  skippedShort: number;
+  skippedSelfLoop: number;
+  skippedInvalidSign: number;
+  skippedDuplicate: number;
+  issues: CsvValidationIssue[];
+};
 
 const dataSource = ref<DataSourceType>('demo');
 const selectedDemoKey = ref(demoKeys[0] ?? '');
 
 const customGraph = ref<GraphData>({ nodes: [], edges: [] });
+const customImportInput = ref<HTMLInputElement | null>(null);
+const cropEnabled = ref(true);
+const cropTargetNodes = ref(220);
+const cropTargetEdges = ref(420);
+const cropSeed = ref(20260412);
+const cropSummaryText = ref('');
 const newNodeLabel = ref('');
 const newEdgeSource = ref('');
 const newEdgeTarget = ref('');
@@ -553,6 +650,715 @@ function clearCustomGraph() {
   customGraph.value = { nodes: [], edges: [] };
   newEdgeSource.value = '';
   newEdgeTarget.value = '';
+}
+
+function isRecord(value: unknown): value is LooseRecord {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toNodeId(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function parseSignValue(edge: LooseRecord): 1 | -1 {
+  const signRaw = edge.sign;
+  if (typeof signRaw === 'number') return signRaw < 0 ? -1 : 1;
+  if (typeof signRaw === 'string') {
+    const text = signRaw.trim().toLowerCase();
+    if (text === '-1' || text === '-' || text === 'negative' || text === 'neg') return -1;
+    if (text === '1' || text === '+' || text === 'positive' || text === 'pos') return 1;
+  }
+  const ratingRaw = edge.rating;
+  if (typeof ratingRaw === 'number') return ratingRaw < 0 ? -1 : 1;
+  if (typeof ratingRaw === 'string') {
+    const rating = Number(ratingRaw);
+    if (Number.isFinite(rating)) return rating < 0 ? -1 : 1;
+  }
+  return 1;
+}
+
+function normalizeImportedGraph(payload: unknown): GraphData {
+  let data: unknown = payload;
+  if (isRecord(data) && isRecord(data.graph)) data = data.graph;
+  if (!isRecord(data)) {
+    throw new Error('导入失败：JSON 根对象无效');
+  }
+
+  const rawNodes = Array.isArray(data.nodes) ? data.nodes : [];
+  const rawEdges = Array.isArray(data.edges)
+    ? data.edges
+    : Array.isArray((data as LooseRecord).links)
+      ? ((data as LooseRecord).links as unknown[])
+      : [];
+
+  const nodes: GraphData['nodes'] = [];
+  const nodeSeen = new Set<string>();
+  for (const item of rawNodes) {
+    if (!isRecord(item)) continue;
+    const id = toNodeId(item.id ?? item.name ?? item.label);
+    if (!id || nodeSeen.has(id)) continue;
+    nodeSeen.add(id);
+    nodes.push({
+      id,
+      label: toNodeId(item.label ?? item.name ?? item.id) || id,
+    });
+  }
+
+  const edges: GraphData['edges'] = [];
+  const edgeSeen = new Set<string>();
+  let edgeIdx = 1;
+  for (const item of rawEdges) {
+    if (!isRecord(item)) continue;
+    const source = toNodeId(item.source ?? item.from);
+    const target = toNodeId(item.target ?? item.to);
+    if (!source || !target || source === target) continue;
+    const key = edgeKey(source, target);
+    if (edgeSeen.has(key)) continue;
+
+    edgeSeen.add(key);
+    if (!nodeSeen.has(source)) {
+      nodeSeen.add(source);
+      nodes.push({ id: source, label: source });
+    }
+    if (!nodeSeen.has(target)) {
+      nodeSeen.add(target);
+      nodes.push({ id: target, label: target });
+    }
+
+    edges.push({
+      id: toNodeId(item.id) || `e${edgeIdx++}`,
+      source,
+      target,
+      sign: parseSignValue(item),
+    });
+  }
+
+  if (nodes.length < 2) {
+    throw new Error('导入失败：节点数量至少为 2');
+  }
+
+  return { nodes, edges };
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  const n = Math.trunc(Number.isFinite(value) ? value : min);
+  return Math.max(min, Math.min(max, n));
+}
+
+function makeSeededRandom(seed: number) {
+  let t = (seed >>> 0) + 0x6d2b79f5;
+  return () => {
+    t |= 0;
+    t = (t + 0x6d2b79f5) | 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function countSign(edges: GraphData['edges']) {
+  let pos = 0;
+  let neg = 0;
+  for (const e of edges) {
+    if (e.sign === -1) neg += 1;
+    else pos += 1;
+  }
+  return { pos, neg };
+}
+
+function buildNodeScores(graph: GraphData): Record<string, NodeScore> {
+  const stats: Record<string, NodeScore> = {};
+  for (const node of graph.nodes) {
+    stats[node.id] = {
+      degree: 0,
+      posDegree: 0,
+      negDegree: 0,
+      mixedDegree: 0,
+      score: 0,
+    };
+  }
+
+  for (const edge of graph.edges) {
+    const src = stats[edge.source];
+    const dst = stats[edge.target];
+    if (!src || !dst) continue;
+    src.degree += 1;
+    dst.degree += 1;
+    if (edge.sign === -1) {
+      src.negDegree += 1;
+      dst.negDegree += 1;
+    } else {
+      src.posDegree += 1;
+      dst.posDegree += 1;
+    }
+  }
+
+  for (const nodeId of Object.keys(stats)) {
+    const s = stats[nodeId];
+    if (!s) continue;
+    s.mixedDegree = Math.min(s.posDegree, s.negDegree);
+    s.score = s.degree * 1.0 + s.mixedDegree * 2.2 + Math.sqrt(Math.max(0, s.degree)) * 0.6;
+  }
+
+  return stats;
+}
+
+function cropLargeSignedGraph(
+  graph: GraphData,
+  targetNodesInput: number,
+  targetEdgesInput: number,
+  seedInput: number
+): { graph: GraphData; report: CropReport } {
+  const beforeNodes = graph.nodes.length;
+  const beforeEdges = graph.edges.length;
+  const beforeSign = countSign(graph.edges);
+
+  if (beforeNodes <= 2 || beforeEdges <= 1) {
+    return {
+      graph: cloneGraph(graph),
+      report: {
+        beforeNodes,
+        beforeEdges,
+        afterNodes: beforeNodes,
+        afterEdges: beforeEdges,
+        beforePos: beforeSign.pos,
+        beforeNeg: beforeSign.neg,
+        afterPos: beforeSign.pos,
+        afterNeg: beforeSign.neg,
+        cropped: false,
+      },
+    };
+  }
+
+  const targetNodes = clampInt(targetNodesInput, 20, beforeNodes);
+  const targetEdges = clampInt(targetEdgesInput, 40, beforeEdges);
+  if (beforeNodes <= targetNodes && beforeEdges <= targetEdges) {
+    return {
+      graph: cloneGraph(graph),
+      report: {
+        beforeNodes,
+        beforeEdges,
+        afterNodes: beforeNodes,
+        afterEdges: beforeEdges,
+        beforePos: beforeSign.pos,
+        beforeNeg: beforeSign.neg,
+        afterPos: beforeSign.pos,
+        afterNeg: beforeSign.neg,
+        cropped: false,
+      },
+    };
+  }
+
+  const rng = makeSeededRandom(clampInt(seedInput, 0, 2147483647));
+  const nodeScores = buildNodeScores(graph);
+  const neighbors = new Map<string, Array<{ other: string; sign: 1 | -1 }>>();
+  for (const node of graph.nodes) {
+    neighbors.set(node.id, []);
+  }
+  for (const edge of graph.edges) {
+    neighbors.get(edge.source)?.push({ other: edge.target, sign: edge.sign });
+    neighbors.get(edge.target)?.push({ other: edge.source, sign: edge.sign });
+  }
+
+  const rankedNodes = [...graph.nodes]
+    .map((n) => ({ id: n.id, score: nodeScores[n.id]?.score ?? 0 }))
+    .sort((a, b) => b.score - a.score);
+
+  const anchorCount = Math.max(3, Math.min(Math.ceil(Math.sqrt(targetNodes)), rankedNodes.length));
+  const selected = new Set<string>(rankedNodes.slice(0, anchorCount).map((x) => x.id));
+
+  while (selected.size < targetNodes) {
+    let bestNode = '';
+    let bestScore = -Infinity;
+
+    for (const nodeId of selected) {
+      const adj = neighbors.get(nodeId) ?? [];
+      for (const item of adj) {
+        const candidate = item.other;
+        if (selected.has(candidate)) continue;
+        const stats = nodeScores[candidate];
+        if (!stats) continue;
+
+        let linksToSelected = 0;
+        let signMixLinks = 0;
+        for (const n2 of neighbors.get(candidate) ?? []) {
+          if (!selected.has(n2.other)) continue;
+          linksToSelected += 1;
+          if (n2.sign === -1) signMixLinks += 1;
+        }
+
+        const candidateScore =
+          stats.score +
+          linksToSelected * 1.4 +
+          signMixLinks * 0.8 +
+          (item.sign === -1 ? 0.25 : 0.1) +
+          rng() * 0.08;
+
+        if (candidateScore > bestScore) {
+          bestScore = candidateScore;
+          bestNode = candidate;
+        }
+      }
+    }
+
+    if (!bestNode) {
+      for (const node of rankedNodes) {
+        if (selected.has(node.id)) continue;
+        const fallbackScore = node.score + rng() * 0.05;
+        if (fallbackScore > bestScore) {
+          bestScore = fallbackScore;
+          bestNode = node.id;
+        }
+      }
+    }
+
+    if (!bestNode) break;
+    selected.add(bestNode);
+  }
+
+  const selectedEdges = graph.edges.filter((e) => selected.has(e.source) && selected.has(e.target));
+  let keptEdges = selectedEdges;
+  if (selectedEdges.length > targetEdges) {
+    const selectedIds = selected;
+    const edgeScore = (edge: GraphData['edges'][number]) => {
+      const a = nodeScores[edge.source];
+      const b = nodeScores[edge.target];
+      const base = (a?.score ?? 0) + (b?.score ?? 0);
+      let common = 0;
+      const aNbr = neighbors.get(edge.source) ?? [];
+      const bNbrSet = new Set((neighbors.get(edge.target) ?? []).map((x) => x.other));
+      for (const item of aNbr) {
+        if (!selectedIds.has(item.other)) continue;
+        if (bNbrSet.has(item.other)) common += 1;
+      }
+      const signBoost = edge.sign === -1 ? 0.45 : 0.2;
+      return base + common * 0.9 + signBoost + rng() * 0.05;
+    };
+
+    const posEdges = selectedEdges.filter((e) => e.sign !== -1).sort((x, y) => edgeScore(y) - edgeScore(x));
+    const negEdges = selectedEdges.filter((e) => e.sign === -1).sort((x, y) => edgeScore(y) - edgeScore(x));
+    const totalSign = countSign(selectedEdges);
+    const negRatio = totalSign.neg / Math.max(1, totalSign.pos + totalSign.neg);
+    let keepNeg = Math.min(negEdges.length, Math.round(targetEdges * negRatio));
+    if (negEdges.length > 0) {
+      keepNeg = Math.max(1, keepNeg);
+    }
+    let keepPos = targetEdges - keepNeg;
+    if (keepPos > posEdges.length) {
+      keepPos = posEdges.length;
+      keepNeg = Math.min(negEdges.length, targetEdges - keepPos);
+    }
+    if (keepNeg > negEdges.length) {
+      keepNeg = negEdges.length;
+      keepPos = Math.min(posEdges.length, targetEdges - keepNeg);
+    }
+
+    keptEdges = [...posEdges.slice(0, keepPos), ...negEdges.slice(0, keepNeg)];
+    if (keptEdges.length < targetEdges) {
+      const used = new Set(keptEdges.map((e) => edgeKey(e.source, e.target)));
+      const tail = selectedEdges
+        .filter((e) => !used.has(edgeKey(e.source, e.target)))
+        .sort((x, y) => edgeScore(y) - edgeScore(x));
+      for (const e of tail) {
+        if (keptEdges.length >= targetEdges) break;
+        keptEdges.push(e);
+      }
+    }
+  }
+
+  const nodeIdSet = new Set<string>();
+  for (const edge of keptEdges) {
+    nodeIdSet.add(edge.source);
+    nodeIdSet.add(edge.target);
+  }
+  for (const id of selected) {
+    if (nodeIdSet.size >= targetNodes) break;
+    nodeIdSet.add(id);
+  }
+
+  const keptNodes = graph.nodes
+    .filter((node) => nodeIdSet.has(node.id))
+    .slice(0, targetNodes)
+    .map((node) => ({ id: node.id, label: node.label }));
+
+  const finalNodeSet = new Set(keptNodes.map((n) => n.id));
+  const finalEdges: GraphData['edges'] = keptEdges
+    .filter((edge) => finalNodeSet.has(edge.source) && finalNodeSet.has(edge.target))
+    .slice(0, targetEdges)
+    .map((edge, idx) => ({
+      id: edge.id || `e${idx + 1}`,
+      source: edge.source,
+      target: edge.target,
+      sign: edge.sign === -1 ? (-1 as const) : (1 as const),
+    }));
+
+  const afterSign = countSign(finalEdges);
+  return {
+    graph: {
+      nodes: keptNodes,
+      edges: finalEdges,
+    },
+    report: {
+      beforeNodes,
+      beforeEdges,
+      afterNodes: keptNodes.length,
+      afterEdges: finalEdges.length,
+      beforePos: beforeSign.pos,
+      beforeNeg: beforeSign.neg,
+      afterPos: afterSign.pos,
+      afterNeg: afterSign.neg,
+      cropped: true,
+    },
+  };
+}
+
+function buildCropSummary(report: CropReport): string {
+  if (!report.cropped) return '导入网络未触发裁剪（规模已在阈值内）。';
+  const beforeNegRatio = report.beforeNeg / Math.max(1, report.beforePos + report.beforeNeg);
+  const afterNegRatio = report.afterNeg / Math.max(1, report.afterPos + report.afterNeg);
+  return [
+    `裁剪完成：N ${report.beforeNodes} -> ${report.afterNodes}`,
+    `E ${report.beforeEdges} -> ${report.afterEdges}`,
+    `负边占比 ${(beforeNegRatio * 100).toFixed(1)}% -> ${(afterNegRatio * 100).toFixed(1)}%`,
+  ].join(' · ');
+}
+
+async function readJsonFile(file: File): Promise<unknown> {
+  const text = await file.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('导入失败：JSON 解析错误');
+  }
+}
+
+function parseSignToken(token: string): 1 | -1 | null {
+  const text = token.trim().toLowerCase();
+  if (!text) return null;
+
+  if (text === '1' || text === '+1' || text === '+' || text === 'pos' || text === 'positive' || text === 'trust') {
+    return 1;
+  }
+  if (text === '-1' || text === '-' || text === 'neg' || text === 'negative' || text === 'distrust') {
+    return -1;
+  }
+
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return numeric < 0 ? -1 : 1;
+  }
+  return null;
+}
+
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      const next = line[i + 1];
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (ch === ',' && !inQuotes) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out;
+}
+
+function detectDelimiter(line: string): ',' | '\t' | ' ' {
+  if (line.includes(',')) return ',';
+  if (line.includes('\t')) return '\t';
+  return ' ';
+}
+
+function splitLineByDelimiter(line: string, delimiter: ',' | '\t' | ' '): string[] {
+  if (delimiter === ',') return parseCsvLine(line);
+  if (delimiter === '\t') return line.split('\t');
+  return line.trim().split(/\s+/);
+}
+
+function looksLikeHeader(tokens: string[]): boolean {
+  const t0 = (tokens[0] ?? '').trim().toLowerCase();
+  const t1 = (tokens[1] ?? '').trim().toLowerCase();
+  const t2 = (tokens[2] ?? '').trim().toLowerCase();
+  if (!t0 || !t1) return false;
+  const firstIsSource = ['source', 'from', 'src', 'fromnodeid', 'node1'].includes(t0);
+  const secondIsTarget = ['target', 'to', 'dst', 'tonodeid', 'node2'].includes(t1);
+  const thirdIsSignLike = ['sign', 'rating', 'weight', 'label'].includes(t2);
+  return firstIsSource || secondIsTarget || thirdIsSignLike;
+}
+
+function normalizeImportedCsv(text: string): { graph: GraphData; report: CsvValidationReport } {
+  const rawLines = text.split(/\r?\n/);
+  const effective: Array<{ lineNo: number; text: string }> = [];
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const line = (rawLines[i] ?? '').trim();
+    if (!line || line.startsWith('#')) continue;
+    effective.push({ lineNo: i + 1, text: line });
+  }
+
+  if (!effective.length) {
+    throw new Error('导入失败：CSV 内容为空');
+  }
+
+  const delimiter = detectDelimiter(effective[0]?.text ?? '');
+  const firstTokens = splitLineByDelimiter(effective[0]?.text ?? '', delimiter).map((x) => x.trim());
+  const hasHeader = looksLikeHeader(firstTokens);
+  const startIndex = hasHeader ? 1 : 0;
+
+  const nodes: GraphData['nodes'] = [];
+  const edges: GraphData['edges'] = [];
+  const nodeSeen = new Set<string>();
+  const edgeSeen = new Set<string>();
+
+  const issues: CsvValidationIssue[] = [];
+  const maxIssueCount = 8;
+  const pushIssue = (line: number, reason: string, raw: string) => {
+    if (issues.length >= maxIssueCount) return;
+    issues.push({ line, reason, raw });
+  };
+
+  let edgeIdx = 1;
+  let skippedShort = 0;
+  let skippedSelfLoop = 0;
+  let skippedInvalidSign = 0;
+  let skippedDuplicate = 0;
+
+  for (let i = startIndex; i < effective.length; i += 1) {
+    const item = effective[i];
+    if (!item) continue;
+    const tokens = splitLineByDelimiter(item.text, delimiter).map((x) => x.trim());
+    if (tokens.length < 3) {
+      skippedShort += 1;
+      pushIssue(item.lineNo, '列数不足（至少需要 source,target,sign）', item.text);
+      continue;
+    }
+
+    const source = toNodeId(tokens[0]);
+    const target = toNodeId(tokens[1]);
+    if (!source || !target) {
+      skippedShort += 1;
+      pushIssue(item.lineNo, 'source 或 target 为空', item.text);
+      continue;
+    }
+    if (source === target) {
+      skippedSelfLoop += 1;
+      pushIssue(item.lineNo, '检测到自环边（source=target）', item.text);
+      continue;
+    }
+
+    let sign = parseSignToken(tokens[2] ?? '');
+    if (sign === null && tokens.length >= 4) {
+      sign = parseSignToken(tokens[3] ?? '');
+    }
+    if (sign === null) {
+      skippedInvalidSign += 1;
+      pushIssue(item.lineNo, '无法识别 sign（应为 1/-1 或可转为正负）', item.text);
+      continue;
+    }
+
+    const key = edgeKey(source, target);
+    if (edgeSeen.has(key)) {
+      skippedDuplicate += 1;
+      pushIssue(item.lineNo, '重复边（无向去重后重复）', item.text);
+      continue;
+    }
+    edgeSeen.add(key);
+
+    if (!nodeSeen.has(source)) {
+      nodeSeen.add(source);
+      nodes.push({ id: source, label: source });
+    }
+    if (!nodeSeen.has(target)) {
+      nodeSeen.add(target);
+      nodes.push({ id: target, label: target });
+    }
+
+    edges.push({
+      id: `e${edgeIdx++}`,
+      source,
+      target,
+      sign,
+    });
+  }
+
+  if (nodes.length < 2) {
+    throw new Error('导入失败：CSV 至少需要 2 个节点');
+  }
+  if (!edges.length) {
+    const detail = issues.map((x) => `第${x.line}行：${x.reason}`).join('；');
+    throw new Error(`导入失败：CSV 未解析出有效边${detail ? `（${detail}）` : ''}`);
+  }
+
+  const report: CsvValidationReport = {
+    delimiter,
+    hasHeader,
+    totalLines: rawLines.length,
+    dataLines: Math.max(0, effective.length - startIndex),
+    parsedNodes: nodes.length,
+    parsedEdges: edges.length,
+    skippedShort,
+    skippedSelfLoop,
+    skippedInvalidSign,
+    skippedDuplicate,
+    issues,
+  };
+
+  return { graph: { nodes, edges }, report };
+}
+
+function delimiterName(delimiter: ',' | '\t' | ' '): string {
+  if (delimiter === ',') return '逗号';
+  if (delimiter === '\t') return 'Tab';
+  return '空格';
+}
+
+function showUploadValidationAlert(message: string) {
+  if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+    window.alert(message);
+  }
+}
+
+function buildCsvValidationMessage(fileName: string, report: CsvValidationReport, cropReport: CropReport): string {
+  const skippedTotal =
+    report.skippedShort + report.skippedSelfLoop + report.skippedInvalidSign + report.skippedDuplicate;
+  const lines: string[] = [
+    `文件：${fileName}`,
+    'CSV 校验完成',
+    `分隔符：${delimiterName(report.delimiter)} · 表头：${report.hasHeader ? '是' : '否'}`,
+    `数据行：${report.dataLines} · 解析成功边：${report.parsedEdges} · 节点：${report.parsedNodes}`,
+    `跳过行：${skippedTotal}（列不足 ${report.skippedShort} / 自环 ${report.skippedSelfLoop} / sign异常 ${report.skippedInvalidSign} / 重复 ${report.skippedDuplicate}）`,
+  ];
+
+  if (report.issues.length > 0) {
+    lines.push('问题示例：');
+    for (const issue of report.issues) {
+      lines.push(`- 第${issue.line}行：${issue.reason}`);
+    }
+  }
+
+  lines.push(cropReport.cropped ? buildCropSummary(cropReport) : '本次未触发裁剪。');
+  return lines.join('\n');
+}
+
+function buildJsonValidationMessage(fileName: string, graph: GraphData, cropReport: CropReport): string {
+  const sign = countSign(graph.edges);
+  const lines = [
+    `文件：${fileName}`,
+    'JSON 校验完成',
+    `节点：${graph.nodes.length} · 边：${graph.edges.length} · 正边：${sign.pos} · 负边：${sign.neg}`,
+    cropReport.cropped ? buildCropSummary(cropReport) : '本次未触发裁剪。',
+  ];
+  return lines.join('\n');
+}
+
+function openCustomImportFile() {
+  customImportInput.value?.click();
+}
+
+async function handleCustomImportFile(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  try {
+    const fileName = file.name.toLowerCase();
+    let graph: GraphData;
+    let csvReport: CsvValidationReport | null = null;
+    let importFormat: 'csv' | 'json' = 'json';
+    if (fileName.endsWith('.json')) {
+      const payload = await readJsonFile(file);
+      graph = normalizeImportedGraph(payload);
+      importFormat = 'json';
+    } else if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
+      const text = await file.text();
+      const parsed = normalizeImportedCsv(text);
+      graph = parsed.graph;
+      csvReport = parsed.report;
+      importFormat = 'csv';
+    } else {
+      const text = await file.text();
+      try {
+        graph = normalizeImportedGraph(JSON.parse(text));
+        importFormat = 'json';
+      } catch {
+        const parsed = normalizeImportedCsv(text);
+        graph = parsed.graph;
+        csvReport = parsed.report;
+        importFormat = 'csv';
+      }
+    }
+
+    let report: CropReport = {
+      beforeNodes: graph.nodes.length,
+      beforeEdges: graph.edges.length,
+      afterNodes: graph.nodes.length,
+      afterEdges: graph.edges.length,
+      beforePos: countSign(graph.edges).pos,
+      beforeNeg: countSign(graph.edges).neg,
+      afterPos: countSign(graph.edges).pos,
+      afterNeg: countSign(graph.edges).neg,
+      cropped: false,
+    };
+
+    if (cropEnabled.value) {
+      const cropped = cropLargeSignedGraph(graph, cropTargetNodes.value, cropTargetEdges.value, cropSeed.value);
+      graph = cropped.graph;
+      report = cropped.report;
+    }
+
+    customGraph.value = graph;
+    edgeIdCounter = Math.max(edgeIdCounter, graph.edges.length + 1);
+    newEdgeSource.value = graph.nodes[0]?.id ?? '';
+    newEdgeTarget.value = graph.nodes[1]?.id ?? '';
+    dataSource.value = 'custom';
+    cropSummaryText.value = buildCropSummary(report);
+    pgsbcError.value = '';
+
+    if (importFormat === 'csv' && csvReport) {
+      showUploadValidationAlert(buildCsvValidationMessage(file.name, csvReport, report));
+    } else {
+      showUploadValidationAlert(buildJsonValidationMessage(file.name, graph, report));
+    }
+  } catch (ex: any) {
+    const msg = ex?.message ?? '导入失败';
+    pgsbcError.value = msg;
+    showUploadValidationAlert(`导入失败：${file.name}\n${msg}`);
+  } finally {
+    if (input) input.value = '';
+  }
+}
+
+function exportCustomGraphJson() {
+  if (!customGraph.value.nodes.length) {
+    pgsbcError.value = '当前自定义网络为空，无法导出';
+    return;
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const payload = {
+    meta: {
+      source: 'paper-visualization-custom',
+      exported_at: new Date().toISOString(),
+      node_count: customGraph.value.nodes.length,
+      edge_count: customGraph.value.edges.length,
+    },
+    graph: cloneGraph(customGraph.value),
+  };
+  downloadText(`custom-network-${stamp}.json`, JSON.stringify(payload, null, 2), 'application/json');
 }
 
 const inputGraph = computed<GraphData>(() => {

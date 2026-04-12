@@ -210,27 +210,106 @@ def _build_candidate_labels(task: TaskState) -> Dict[str, int]:
     if task.anonymized_graph is None:
         return dict(task.current_labels)
 
-    neighbors = _build_neighbors(task.anonymized_graph)
+    # HM-Louvain-like candidate generation:
+    # phase 1: node greedy; phase 2: cluster greedy; both repeated to convergence.
     labels = dict(task.current_labels)
-    nodes = sorted(labels.keys())
-    for node in nodes:
-        candidate_clusters = {labels[node]}
-        for nbr in neighbors.get(node, set()):
-            if nbr in labels:
-                candidate_clusters.add(labels[nbr])
+    if not labels:
+        return labels
 
-        best_cluster = labels[node]
-        best_h, _ = _compute_unbalanced_edges(task.graph, labels)
-        for cluster in sorted(candidate_clusters):
-            if cluster == labels[node]:
+    work_graph = task.anonymized_graph
+    neighbors = _build_neighbors(work_graph)
+    nodes = sorted(labels.keys())
+
+    def score(cur_labels: Dict[str, int]) -> int:
+        val, _ = _compute_unbalanced_edges(work_graph, cur_labels)
+        return int(val)
+
+    def node_greedy_pass() -> bool:
+        changed = False
+        for node in nodes:
+            cur_cluster = labels[node]
+            candidate_clusters = {cur_cluster}
+            for nbr in neighbors.get(node, set()):
+                if nbr in labels:
+                    candidate_clusters.add(labels[nbr])
+
+            best_cluster = cur_cluster
+            best_score = score(labels)
+            for cluster in sorted(candidate_clusters):
+                if cluster == cur_cluster:
+                    continue
+                temp = dict(labels)
+                temp[node] = cluster
+                h_val = score(temp)
+                if h_val < best_score:
+                    best_score = h_val
+                    best_cluster = cluster
+            if best_cluster != cur_cluster:
+                labels[node] = best_cluster
+                changed = True
+        return changed
+
+    def cluster_greedy_pass() -> bool:
+        changed = False
+        members: Dict[int, List[str]] = {}
+        for n, cid in labels.items():
+            members.setdefault(cid, []).append(n)
+
+        current_score = score(labels)
+        for cluster_id in sorted(list(members.keys())):
+            cluster_nodes = members.get(cluster_id, [])
+            if not cluster_nodes:
                 continue
-            temp = dict(labels)
-            temp[node] = cluster
-            h_val, _ = _compute_unbalanced_edges(task.graph, temp)
-            if h_val < best_h:
-                best_h = h_val
-                best_cluster = cluster
-        labels[node] = best_cluster
+
+            candidate_targets: set[int] = set()
+            cluster_set = set(cluster_nodes)
+            for e in work_graph.get("edges", []):
+                a = str(e["source"])
+                b = str(e["target"])
+                if a in cluster_set and b in labels and labels[b] != cluster_id:
+                    candidate_targets.add(labels[b])
+                if b in cluster_set and a in labels and labels[a] != cluster_id:
+                    candidate_targets.add(labels[a])
+
+            if not candidate_targets:
+                continue
+
+            best_target = cluster_id
+            best_score = current_score
+            for target in sorted(candidate_targets):
+                temp = dict(labels)
+                for n in cluster_nodes:
+                    temp[n] = target
+                h_val = score(temp)
+                if h_val < best_score:
+                    best_score = h_val
+                    best_target = target
+
+            if best_target != cluster_id:
+                for n in cluster_nodes:
+                    labels[n] = best_target
+                changed = True
+                current_score = best_score
+        return changed
+
+    pass_cap = max(2, int(len(labels).bit_length()) + 1)
+    outer_cap = 10
+    for _ in range(outer_cap):
+        changed_outer = False
+
+        for _ in range(pass_cap):
+            if not node_greedy_pass():
+                break
+            changed_outer = True
+
+        for _ in range(pass_cap):
+            if not cluster_greedy_pass():
+                break
+            changed_outer = True
+
+        if not changed_outer:
+            break
+
     return labels
 
 
