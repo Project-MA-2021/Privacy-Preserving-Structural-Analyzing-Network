@@ -256,6 +256,7 @@
           <p class="hint" v-if="pgsbcTaskState">
             task={{ pgsbcTaskState.id }} · {{ pgsbcTaskState.status }} · t={{ pgsbcTaskState.t }}/{{ pgsbcTaskState.max_iter }}
           </p>
+          <p class="hint" v-if="backendOutlierSummary">{{ backendOutlierSummary }}</p>
           <p class="hint">流程语义：外层按网络集循环，内层按单网络执行 Step1-Step8。</p>
           <p class="hint" v-if="pgsbcTaskState">已记录轮次：{{ pgsbcRoundCount }}</p>
           <p class="hint task-error" v-if="pgsbcError">{{ pgsbcError }}</p>
@@ -1498,6 +1499,30 @@ const {
 
 const pgsbcTaskState = computed(() => pgsbcTask.value);
 const pgsbcRoundCount = computed(() => pgsbcTaskState.value?.round_count ?? pgsbcTaskState.value?.t ?? 0);
+const backendOutlierSummary = computed(() => {
+  const task = pgsbcTaskState.value;
+  if (!task) return '';
+
+  const report = (task.outlier_filter_report ?? {}) as Record<string, unknown>;
+  const applied = Boolean(report.applied);
+  const removedNodes = parseNumber(report.removed_nodes) ?? 0;
+  const removedEdges = parseNumber(report.removed_edges) ?? 0;
+  const beforeNodes = parseNumber(report.before_nodes) ?? task.input_node_count ?? task.node_count;
+  const afterNodes = parseNumber(report.after_nodes) ?? task.node_count;
+  const reasonRaw = report.reason;
+  const reason = typeof reasonRaw === 'string' ? reasonRaw : '';
+
+  if (task.outlier_filter_enabled === false) {
+    return '后端离群过滤：关闭';
+  }
+  if (applied) {
+    return `后端离群过滤：${beforeNodes}N -> ${afterNodes}N，移除 ${removedNodes} 节点 / ${removedEdges} 边`;
+  }
+  if (reason) {
+    return `后端离群过滤：未触发（${reason}）`;
+  }
+  return '';
+});
 const exportLoading = ref(false);
 const showParamHelp = ref(false);
 const batchRunning = ref(false);
@@ -1563,7 +1588,13 @@ const taskGraph = computed<GraphData>(() => {
     const demoGraph = demoGraphs[key];
     if (demoGraph) return demoGraph;
   }
-  if (pgsbcHasTask.value) return boundTaskGraph.value ?? inputGraph.value;
+  if (pgsbcHasTask.value) {
+    const effective = pgsbcTaskState.value?.effective_graph;
+    if (effective && Array.isArray(effective.nodes) && effective.nodes.length >= 2) {
+      return cloneGraph(effective);
+    }
+    return boundTaskGraph.value ?? inputGraph.value;
+  }
   return inputGraph.value;
 });
 

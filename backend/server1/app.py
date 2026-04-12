@@ -33,8 +33,11 @@ CORS(app)
 class TaskState:
     id: str
     graph: Dict[str, Any]
+    input_graph: Dict[str, Any] | None = None
     max_iter: int = DEFAULT_MAX_ITER
     rb: float = DEFAULT_RB
+    outlier_filter_enabled: bool = True
+    outlier_filter_report: Dict[str, Any] = field(default_factory=dict)
     t: int = 0
     initialized: bool = False
     public_key: Dict[str, str] | None = None
@@ -133,6 +136,137 @@ def _normalize_graph(graph: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
     return {"nodes": nodes, "edges": edges}
+
+
+def _build_adj_with_sign(graph: Dict[str, Any]) -> Dict[str, List[Tuple[str, int]]]:
+    adj: Dict[str, List[Tuple[str, int]]] = {str(n["id"]): [] for n in graph.get("nodes", [])}
+    for e in graph.get("edges", []):
+        a = str(e["source"])
+        b = str(e["target"])
+        sign = 1 if int(e.get("sign", 1)) >= 0 else -1
+        adj.setdefault(a, []).append((b, sign))
+        adj.setdefault(b, []).append((a, sign))
+    return adj
+
+
+def _filter_graph_outliers(
+    graph: Dict[str, Any],
+    enabled: bool,
+    max_remove_ratio: float = 0.28,
+    min_nodes_to_apply: int = 36,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    nodes = [{"id": str(n["id"])} for n in graph.get("nodes", [])]
+    edges = [dict(e) for e in graph.get("edges", [])]
+    before_nodes = len(nodes)
+    before_edges = len(edges)
+
+    report: Dict[str, Any] = {
+        "enabled": bool(enabled),
+        "applied": False,
+        "before_nodes": before_nodes,
+        "before_edges": before_edges,
+        "after_nodes": before_nodes,
+        "after_edges": before_edges,
+        "removed_nodes": 0,
+        "removed_edges": 0,
+        "max_remove_ratio": float(max_remove_ratio),
+        "min_nodes_to_apply": int(min_nodes_to_apply),
+        "reason": "",
+    }
+
+    if not enabled:
+        report["reason"] = "disabled_by_request"
+        return {"nodes": nodes, "edges": edges}, report
+
+    if before_nodes < max(2, min_nodes_to_apply):
+        report["reason"] = "graph_too_small"
+        return {"nodes": nodes, "edges": edges}, report
+
+    adj = _build_adj_with_sign({"nodes": nodes, "edges": edges})
+    degree: Dict[str, int] = {nid: len(neis) for nid, neis in adj.items()}
+    node_ids = [str(n["id"]) for n in nodes]
+
+    isolated: List[str] = [nid for nid in node_ids if degree.get(nid, 0) == 0]
+    leaf_candidates: List[Tuple[float, str]] = []
+    for nid in node_ids:
+        if degree.get(nid, 0) != 1:
+            continue
+        nbr, sign = adj.get(nid, [("", 1)])[0]
+        nbr_degree = degree.get(nbr, 0)
+        # Higher neighbor degree indicates a hub-spoke peripheral point.
+        # Slightly prefer removing positive leaf first to preserve conflict structure.
+        leaf_score = float(nbr_degree * 10 + (0 if sign < 0 else 1))
+        leaf_candidates.append((leaf_score, nid))
+
+    max_remove = max(1, int(before_nodes * max(0.0, min(0.9, max_remove_ratio))))
+    selected: set[str] = set()
+    for nid in isolated:
+        selected.add(nid)
+        if len(selected) >= max_remove:
+            break
+
+    if len(selected) < max_remove:
+        for _, nid in sorted(leaf_candidates, key=lambda x: (-x[0], x[1])):
+            if nid in selected:
+                continue
+            selected.add(nid)
+            if len(selected) >= max_remove:
+                break
+
+    if not selected:
+        report["reason"] = "no_outlier_candidates"
+        return {"nodes": nodes, "edges": edges}, report
+
+    # Safety: keep at least 2 nodes and at least ~62% of original nodes.
+    min_keep_nodes = max(2, int(math.ceil(before_nodes * 0.62)))
+    if before_nodes - len(selected) < min_keep_nodes:
+        over = min_keep_nodes - (before_nodes - len(selected))
+        # remove less important selected nodes (leaf nodes first)
+        ordered_selected = sorted(
+            selected,
+            key=lambda nid: (
+                degree.get(nid, 99),  # keep non-isolated removal lower priority
+                -(degree.get(adj.get(nid, [("", 0)])[0][0], 0) if degree.get(nid, 0) == 1 else 0),
+                nid,
+            ),
+        )
+        for nid in ordered_selected:
+            if over <= 0:
+                break
+            selected.remove(nid)
+            over -= 1
+
+    if before_nodes - len(selected) < 2:
+        report["reason"] = "too_aggressive_after_guard"
+        return {"nodes": nodes, "edges": edges}, report
+
+    selected_ids = set(selected)
+    kept_nodes = [n for n in nodes if str(n["id"]) not in selected_ids]
+    kept_node_ids = {str(n["id"]) for n in kept_nodes}
+    kept_edges = [
+        e
+        for e in edges
+        if str(e.get("source", "")) in kept_node_ids and str(e.get("target", "")) in kept_node_ids
+    ]
+
+    # If all edges are removed, do not apply the filter.
+    if before_edges > 0 and not kept_edges:
+        report["reason"] = "would_drop_all_edges"
+        return {"nodes": nodes, "edges": edges}, report
+
+    report.update(
+        {
+            "applied": True,
+            "after_nodes": len(kept_nodes),
+            "after_edges": len(kept_edges),
+            "removed_nodes": before_nodes - len(kept_nodes),
+            "removed_edges": before_edges - len(kept_edges),
+            "isolated_candidates": len(isolated),
+            "leaf_candidates": len(leaf_candidates),
+            "reason": "applied",
+        }
+    )
+    return {"nodes": kept_nodes, "edges": kept_edges}, report
 
 
 def _build_neighbors(graph: Dict[str, Any]) -> Dict[str, set[str]]:
@@ -532,6 +666,8 @@ def _to_state(task: TaskState) -> Dict[str, Any]:
     node_count = len(task.graph.get("nodes", []))
     real_edge_count = len(task.graph.get("edges", []))
     anon_edge_count = len(task.anonymized_graph.get("edges", [])) if task.anonymized_graph else 0
+    input_node_count = len(task.input_graph.get("nodes", [])) if task.input_graph else node_count
+    input_edge_count = len(task.input_graph.get("edges", [])) if task.input_graph else real_edge_count
     return {
         "id": task.id,
         "status": task.status,
@@ -539,9 +675,14 @@ def _to_state(task: TaskState) -> Dict[str, Any]:
         "max_iter": task.max_iter,
         "rb": task.rb,
         "initialized": task.initialized,
+        "input_node_count": input_node_count,
+        "input_edge_count": input_edge_count,
         "node_count": node_count,
         "real_edge_count": real_edge_count,
         "anon_edge_count": anon_edge_count,
+        "effective_graph": task.graph,
+        "outlier_filter_enabled": task.outlier_filter_enabled,
+        "outlier_filter_report": task.outlier_filter_report,
         "last_accepted_h": task.last_accepted_h,
         "current_h_real": task.current_h_real,
         "current_labels": task.current_labels,
@@ -556,6 +697,8 @@ def _to_export_payload(task: TaskState) -> Dict[str, Any]:
     node_count = len(task.graph.get("nodes", []))
     real_edge_count = len(task.graph.get("edges", []))
     anon_edge_count = len(task.anonymized_graph.get("edges", [])) if task.anonymized_graph else 0
+    input_node_count = len(task.input_graph.get("nodes", [])) if task.input_graph else node_count
+    input_edge_count = len(task.input_graph.get("edges", [])) if task.input_graph else real_edge_count
     return {
         "task_id": task.id,
         "summary": {
@@ -563,9 +706,13 @@ def _to_export_payload(task: TaskState) -> Dict[str, Any]:
             "t": task.t,
             "max_iter": task.max_iter,
             "rb": task.rb,
+            "input_node_count": input_node_count,
+            "input_edge_count": input_edge_count,
             "node_count": node_count,
             "real_edge_count": real_edge_count,
             "anon_edge_count": anon_edge_count,
+            "outlier_filter_enabled": task.outlier_filter_enabled,
+            "outlier_filter_report": task.outlier_filter_report,
             "round_count": len(task.round_metrics),
         },
         "rows": task.round_metrics,
@@ -594,13 +741,44 @@ def create_task():
     if rb < 0 or rb > 1:
         return err("INVALID_RB", "rb must be between 0 and 1")
 
+    outlier_filter_enabled = bool(body.get("outlier_filter", True))
+    outlier_max_remove_ratio = float(body.get("outlier_max_remove_ratio", 0.28))
+    if outlier_max_remove_ratio < 0 or outlier_max_remove_ratio > 0.9:
+        return err("INVALID_OUTLIER_RATIO", "outlier_max_remove_ratio must be between 0 and 0.9")
+    outlier_min_nodes = int(body.get("outlier_min_nodes", 36))
+    if outlier_min_nodes < 2:
+        return err("INVALID_OUTLIER_MIN_NODES", "outlier_min_nodes must be >= 2")
+
+    filtered_graph, filter_report = _filter_graph_outliers(
+        normalized_graph,
+        enabled=outlier_filter_enabled,
+        max_remove_ratio=outlier_max_remove_ratio,
+        min_nodes_to_apply=outlier_min_nodes,
+    )
+    if len(filtered_graph.get("nodes", [])) < 2:
+        filtered_graph = normalized_graph
+        filter_report = {
+            "enabled": outlier_filter_enabled,
+            "applied": False,
+            "reason": "filtered_graph_too_small",
+            "before_nodes": len(normalized_graph.get("nodes", [])),
+            "before_edges": len(normalized_graph.get("edges", [])),
+            "after_nodes": len(normalized_graph.get("nodes", [])),
+            "after_edges": len(normalized_graph.get("edges", [])),
+            "removed_nodes": 0,
+            "removed_edges": 0,
+        }
+
     task_id = uuid4().hex[:12]
     task = TaskState(
         id=task_id,
-        graph=normalized_graph,
+        graph=filtered_graph,
+        input_graph=normalized_graph,
         max_iter=max_iter,
         rb=rb,
-        current_labels=_build_initial_labels(normalized_graph),
+        outlier_filter_enabled=outlier_filter_enabled,
+        outlier_filter_report=filter_report,
+        current_labels=_build_initial_labels(filtered_graph),
     )
     task.current_h_real = float(_compute_unbalanced_edges(task.graph, task.current_labels)[0])
 
@@ -610,6 +788,19 @@ def create_task():
         return err("SERVER2_UNAVAILABLE", f"failed to initialize keypair via server2: {ex}", 503)
 
     TASKS[task_id] = task
+    _log(
+        task,
+        1,
+        "Server1",
+        "input graph prepared with backend outlier filter",
+        {
+            "input_nodes": len(normalized_graph.get("nodes", [])),
+            "input_edges": len(normalized_graph.get("edges", [])),
+            "effective_nodes": len(task.graph.get("nodes", [])),
+            "effective_edges": len(task.graph.get("edges", [])),
+            "outlier_filter": filter_report,
+        },
+    )
     return ok({"task": _to_state(task)})
 
 

@@ -8,9 +8,14 @@ export interface PgsbcTaskState {
   max_iter: number;
   rb: number;
   initialized: boolean;
+  input_node_count?: number;
+  input_edge_count?: number;
   node_count: number;
   real_edge_count: number;
   anon_edge_count: number;
+  effective_graph?: GraphData;
+  outlier_filter_enabled?: boolean;
+  outlier_filter_report?: Record<string, unknown>;
   last_accepted_h: number | null;
   current_h_real: number | null;
   current_labels: Record<string, number>;
