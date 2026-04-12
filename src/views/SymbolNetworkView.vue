@@ -215,6 +215,15 @@
               {{ showParamHelp ? '收起参数说明' : '查看参数含义' }}
             </button>
           </div>
+          <div class="form-row form-row-small">
+            <label>
+              <input type="checkbox" v-model="clusterOutlierFilterEnabled" />
+              聚类视图去异常点（仅显示）
+            </label>
+          </div>
+          <p class="hint" v-if="clusterOutlierFilterEnabled">
+            已启用：剔除低连接且位于小簇/小连通分量的离群点，不影响后端 h_t 与聚类计算。
+          </p>
 
           <div class="param-help" v-if="showParamHelp">
             <div class="param-group-title">输入与任务</div>
@@ -328,6 +337,9 @@
               <span class="overlay-badge">视图 B：聚类状态 S_t</span>
               <span class="overlay-badge">簇数：{{ clusterCount }}</span>
               <span class="overlay-badge">更新规则：c_t=1 接受 / c_t=0 回退</span>
+              <span class="overlay-badge" v-if="clusterOutlierFilterEnabled && clusterOutlierReport.removedNodes > 0">
+                已过滤离群点：{{ clusterOutlierReport.removedNodes }} 节点 / {{ clusterOutlierReport.removedEdges }} 边
+              </span>
             </div>
             <div class="chart-empty-tip" v-if="!hasClusterLabels">尚无已接受聚类，执行至少一轮迭代后显示。</div>
           </div>
@@ -573,6 +585,11 @@ type CsvValidationReport = {
   skippedDuplicate: number;
   issues: CsvValidationIssue[];
 };
+type ClusterOutlierReport = {
+  graph: GraphData;
+  removedNodes: number;
+  removedEdges: number;
+};
 
 const dataSource = ref<DataSourceType>('demo');
 const selectedDemoKey = ref(demoKeys[0] ?? '');
@@ -584,6 +601,7 @@ const cropTargetNodes = ref(220);
 const cropTargetEdges = ref(420);
 const cropSeed = ref(20260412);
 const cropSummaryText = ref('');
+const clusterOutlierFilterEnabled = ref(true);
 const newNodeLabel = ref('');
 const newEdgeSource = ref('');
 const newEdgeTarget = ref('');
@@ -607,6 +625,95 @@ function cloneGraph(graph: GraphData): GraphData {
       sign: e.sign === -1 ? -1 : 1,
     })),
     clusters: graph.clusters ? { ...graph.clusters } : undefined,
+  };
+}
+
+function filterClusterOutliersForView(graph: GraphData, labels: Record<string, number>): ClusterOutlierReport {
+  const base = cloneGraph(graph);
+  if (!base.nodes.length || !base.edges.length || !Object.keys(labels).length) {
+    return { graph: base, removedNodes: 0, removedEdges: 0 };
+  }
+
+  const nodeSet = new Set(base.nodes.map((n) => n.id));
+  const degree = new Map<string, number>();
+  const neighbors = new Map<string, Set<string>>();
+  for (const node of base.nodes) {
+    degree.set(node.id, 0);
+    neighbors.set(node.id, new Set<string>());
+  }
+
+  for (const edge of base.edges) {
+    if (!nodeSet.has(edge.source) || !nodeSet.has(edge.target)) continue;
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    neighbors.get(edge.source)?.add(edge.target);
+    neighbors.get(edge.target)?.add(edge.source);
+  }
+
+  const componentSize = new Map<string, number>();
+  const visited = new Set<string>();
+  for (const node of base.nodes) {
+    if (visited.has(node.id)) continue;
+    const queue = [node.id];
+    visited.add(node.id);
+    const comp: string[] = [];
+    while (queue.length) {
+      const cur = queue.shift() as string;
+      comp.push(cur);
+      for (const nxt of neighbors.get(cur) ?? []) {
+        if (visited.has(nxt)) continue;
+        visited.add(nxt);
+        queue.push(nxt);
+      }
+    }
+    for (const id of comp) componentSize.set(id, comp.length);
+  }
+
+  const clusterSize = new Map<number, number>();
+  for (const node of base.nodes) {
+    const cid = labels[node.id];
+    if (typeof cid !== 'number' || !Number.isFinite(cid)) continue;
+    const k = Math.trunc(cid);
+    clusterSize.set(k, (clusterSize.get(k) ?? 0) + 1);
+  }
+
+  const DEGREE_THRESHOLD = 1;
+  const CLUSTER_SIZE_THRESHOLD = 2;
+  const COMPONENT_SIZE_THRESHOLD = 3;
+
+  const removeIds = new Set<string>();
+  for (const node of base.nodes) {
+    const d = degree.get(node.id) ?? 0;
+    const cid = labels[node.id];
+    const cSize = typeof cid === 'number' && Number.isFinite(cid) ? (clusterSize.get(Math.trunc(cid)) ?? 1) : 1;
+    const comp = componentSize.get(node.id) ?? 1;
+    const shouldRemove =
+      d <= DEGREE_THRESHOLD && cSize <= CLUSTER_SIZE_THRESHOLD && comp <= COMPONENT_SIZE_THRESHOLD;
+    if (shouldRemove) removeIds.add(node.id);
+  }
+
+  // Safety guard: avoid over-filtering and keep at least a meaningful graph.
+  if (!removeIds.size || base.nodes.length - removeIds.size < Math.max(20, Math.floor(base.nodes.length * 0.58))) {
+    return { graph: base, removedNodes: 0, removedEdges: 0 };
+  }
+
+  const keptNodes = base.nodes.filter((n) => !removeIds.has(n.id));
+  const keptNodeIds = new Set(keptNodes.map((n) => n.id));
+  const keptEdges = base.edges.filter((e) => keptNodeIds.has(e.source) && keptNodeIds.has(e.target));
+  const keptClusters: Record<string, number> = {};
+  for (const node of keptNodes) {
+    const cid = labels[node.id];
+    if (typeof cid === 'number' && Number.isFinite(cid)) keptClusters[node.id] = Math.trunc(cid);
+  }
+
+  return {
+    graph: {
+      nodes: keptNodes,
+      edges: keptEdges,
+      clusters: keptClusters,
+    },
+    removedNodes: base.nodes.length - keptNodes.length,
+    removedEdges: base.edges.length - keptEdges.length,
   };
 }
 
@@ -1464,7 +1571,7 @@ const rawGraphForRender = computed<GraphData>(() => {
   return cloneGraph(taskGraph.value);
 });
 
-const clusteredGraphForRender = computed<GraphData>(() => {
+const clusterBaseGraphForRender = computed<GraphData>(() => {
   const base = cloneGraph(taskGraph.value);
   const labels = clusterLabelsForView.value;
   if (Object.keys(labels).length > 0) {
@@ -1473,13 +1580,24 @@ const clusteredGraphForRender = computed<GraphData>(() => {
   return base;
 });
 
-const hasClusterLabels = computed(() => {
+const clusterOutlierReport = computed<ClusterOutlierReport>(() => {
+  const base = clusterBaseGraphForRender.value;
   const labels = clusterLabelsForView.value;
+  if (!clusterOutlierFilterEnabled.value) {
+    return { graph: base, removedNodes: 0, removedEdges: 0 };
+  }
+  return filterClusterOutliersForView(base, labels);
+});
+
+const clusteredGraphForRender = computed<GraphData>(() => clusterOutlierReport.value.graph);
+
+const hasClusterLabels = computed(() => {
+  const labels = clusteredGraphForRender.value.clusters ?? {};
   return Object.keys(labels).length > 0;
 });
 
 const clusterCount = computed(() => {
-  const labels = clusterLabelsForView.value;
+  const labels = clusteredGraphForRender.value.clusters ?? {};
   const values = Object.values(labels);
   if (!values.length) return 0;
   return new Set(values).size;
